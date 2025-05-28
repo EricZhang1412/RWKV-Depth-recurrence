@@ -1,3 +1,12 @@
+# [2025-5-28] Update: 
+- 🚩RWKV-v7 with cross-layer parameter sharing technique: located in [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/main/RWKV-v7/train_temp/src/model_sharedlayers.py), inspired by [ALBERT](https://arxiv.org/abs/1909.11942) and [RWKV-6](https://arxiv.org/abs/2404.05892).
+  
+## TODO
+<!-- add checkbox -->
+- [ ] Add layer memory, optimizer memory and hidden states' memory analysis for RWKV-v7-sharing.
+- [ ] Now the memory is too high, need to reduce it.
+
+# [Original README.md by RWKV Team]
 # RWKV: Parallelizable RNN with Transformer-level LLM Performance (pronounced as "RwaKuv" (rʌkuv in IPA), from 4 major params: R W K V)
 
 RWKV website: https://rwkv.com (with 60+ RWKV-related papers)
