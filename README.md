@@ -6,8 +6,8 @@
 
 ## 📝TODO
 <!-- add checkbox -->
+- [ ] 🔍Read papers about looping models and scaling RNNs. Find some basic tasks to train and verify our models.
 - [ ] 🔍Add layer memory, optimizer memory and hidden states' memory analysis for RWKV-v7-sharing.
-
 > 💡Note: RWKV project is based on pytorch-lightning. I am not sure whether the `lightning` and `pytorch-lightning` modules are the same. In `lightning` package, we have this profilers to analyze memory usage. Maybe we can use it to analyze RWKV-v7-sharing memory usage. 
 > > 🔧Still working on it...
 
