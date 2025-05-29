@@ -57,10 +57,12 @@ if __name__ == "__main__":
     parser.add_argument("--my_exit_tokens", default=0, type=int)
 
     ###################### new #######################
-    parser.add_argument("--num_hidden_layers", default=40, type=int)
+    parser.add_argument("--num_hidden_layers", default=400, type=int)
     parser.add_argument("--num_hidden_groups", default=4, type=int)
     parser.add_argument("--inner_group_num", default=1, type=int)
     ##################################################
+
+
 
     parser = Trainer.add_argparse_args(parser)
     args = parser.parse_args()
@@ -179,7 +181,7 @@ if __name__ == "__main__":
     if args.precision == "fp16":
         rank_zero_info("\n\nNote: you are using fp16 (might overflow). Try bf16 / tf32 for stable training.\n\n")
 
-    os.environ["RWKV_JIT_ON"] = "1"
+    os.environ["RWKV_JIT_ON"] = "0"
     if "deepspeed_stage_3" in args.strategy:
         os.environ["RWKV_JIT_ON"] = "0" # somehow incompatible
 

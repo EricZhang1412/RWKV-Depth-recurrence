@@ -11,7 +11,7 @@
 #
 MODEL_TYPE="x070" # x060 => rwkv-6.0
 #
-N_LAYER="80"
+N_LAYER="200"
 N_EMBD="768"
 #
 CTX_LEN="512" # !!! change magic_prime if you change ctx_len !!!
@@ -28,7 +28,7 @@ PROJ_DIR="out/L"$N_LAYER"-D"$N_EMBD"-"$MODEL_TYPE # set output folder
 M_BSZ="16" # takes ~9G VRAM here => reduce this to save VRAM, increase this for faster speed
 LR_INIT="6e-4"
 LR_FINAL="6e-5"
-GRAD_CP=0 # 1 => slower, save VRAM; 0 => faster, more VRAM
+GRAD_CP=1 # 1 => slower, save VRAM; 0 => faster, more VRAM
 EPOCH_SAVE=10 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens) => decrease if your GPU is weak
 #
 #######################################################################################################################
@@ -41,7 +41,7 @@ GPU_PER_NODE=4 # number of GPUs per node
 #
 DS_BUCKET_MB=200 # set to 2 for consumer GPUs, set to 200 for A100 / H100 (affects speed & vram usage)
 #
-CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py \
+TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py \
     --load_model "0" \
     --wandb "Test" \
     --proj_dir $PROJ_DIR \
@@ -50,7 +50,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py \
     --train_stage 3 \
     --epoch_count 999999 \
     --epoch_begin 0 \
-    --data_file "/online1/sc100116/sc100116/datasets/minipile/minipile" \
+    --data_file "data/minipile" \
     --my_exit_tokens 1498226207 \
     --magic_prime 2926181 \
     --num_nodes $N_NODE \

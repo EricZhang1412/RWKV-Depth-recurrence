@@ -13,6 +13,8 @@ if importlib.util.find_spec('deepspeed'):
     import deepspeed
     from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 
+from torch.utils.checkpoint import checkpoint
+
 try:
     print('RWKV_MY_TESTING', os.environ["RWKV_MY_TESTING"])
 except:
@@ -78,6 +80,7 @@ class RWKV_Tmix_x070_v2(MyModule):
     def __init__(self, args, group_id, loops_per_group):
         super().__init__()
         self.args = args
+        self.grad_cp = getattr(args, 'grad_cp', 0)
         self.group_id = group_id
         self.loops_per_group = loops_per_group
         self.my_testing = args.my_testing
@@ -153,37 +156,81 @@ class RWKV_Tmix_x070_v2(MyModule):
             self.key.weight.data.uniform_(-0.05/(C**0.5), 0.05/(C**0.5))
             self.value.weight.data.uniform_(-0.5/(C**0.5), 0.5/(C**0.5))
             self.output.weight.data.zero_()
+    
     @MyFunction
-    def forward(self, x, v_first):
+    def _forward_impl(self, x, v_first):
         B, T, C = x.size()
         H = self.n_head
         xx = self.time_shift(x) - x
-
         xr = x + xx * self.x_r
         xw = x + xx * self.x_w
         xk = x + xx * self.x_k
         xv = x + xx * self.x_v
         xa = x + xx * self.x_a
         xg = x + xx * self.x_g
-        
+
         r = self.receptance(xr)
         w = -F.softplus(-(self.w0 + torch.tanh(xw @ self.w1) @ self.w2)) - 0.5 # soft-clamp to (-inf, -0.5)
         k = self.key(xk)
         v = self.value(xv)
-        if self.group_id * self.loops_per_group == 0:
-            v_first = v # store the v of the first layer
-        else:
-            v = v + (v_first - v) * torch.sigmoid(self.v0 + (xv @ self.v1) @ self.v2) # add value residual
         a = torch.sigmoid(self.a0 + (xa @ self.a1) @ self.a2) # a is "in-context learning rate"
         g = torch.sigmoid(xg @ self.g1) @ self.g2
         kk = k * self.k_k
         kk = F.normalize(kk.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,C)
         k = k * (1 + (a-1) * self.k_a)
+
+        if self.group_id * self.loops_per_group == 0:
+            v_first = v # store the v of the first layer
+        else:
+            v = v + (v_first - v) * torch.sigmoid(self.v0 + (xv @ self.v1) @ self.v2) # add value residual
         x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a)
         x = self.ln_x(x.view(B * T, C)).view(B, T, C)
         x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
         x = self.output(x * g)
         return x, v_first
+    def forward(self, x, v_first):
+        if self.grad_cp > 0:
+            return checkpoint(self._forward_impl, x, v_first, use_reentrant=False)
+        else:
+            return self._forward_impl(x, v_first)
+
+    # @MyFunction
+    # def forward(self, x, v_first):
+    #     B, T, C = x.size()
+    #     H = self.n_head
+    #     xx = self.time_shift(x) - x
+
+    #     xr = x + xx * self.x_r
+    #     xw = x + xx * self.x_w
+    #     xk = x + xx * self.x_k
+    #     xv = x + xx * self.x_v
+    #     xa = x + xx * self.x_a
+    #     xg = x + xx * self.x_g
+        
+    #     r = self.receptance(xr)
+    #     w = -F.softplus(-(self.w0 + torch.tanh(xw @ self.w1) @ self.w2)) - 0.5 # soft-clamp to (-inf, -0.5)
+    #     k = self.key(xk)
+    #     v = self.value(xv)
+        
+
+    #     if self.group_id * self.loops_per_group == 0:
+    #         v_first = v # store the v of the first layer
+    #     else:
+    #         v = v + (v_first - v) * torch.sigmoid(self.v0 + (xv @ self.v1) @ self.v2) # add value residual
+
+    #     a = torch.sigmoid(self.a0 + (xa @ self.a1) @ self.a2) # a is "in-context learning rate"
+    #     g = torch.sigmoid(xg @ self.g1) @ self.g2
+    #     kk = k * self.k_k
+    #     kk = F.normalize(kk.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,C)
+    #     k = k * (1 + (a-1) * self.k_a)
+        
+    #     x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a)
+    #     x = self.ln_x(x.view(B * T, C)).view(B, T, C)
+    #     x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
+    #     x = self.output(x * g)
+    #     return x, v_first
+
+    
 
 
 ############RWKV_CMix_x070_v2: shared layers############
@@ -191,6 +238,7 @@ class RWKV_CMix_x070_v2(MyModule):
     def __init__(self, args, group_id, loops_per_group):
         super().__init__()
         self.args = args
+        self.grad_cp = getattr(args, 'grad_cp', 0)
         self.group_id = group_id
         self.loops_per_group = loops_per_group
 
@@ -207,18 +255,30 @@ class RWKV_CMix_x070_v2(MyModule):
         self.value = nn.Linear(args.n_embd * 4, args.n_embd, bias=False)
         self.key.weight.data.uniform_(-0.5/(args.n_embd**0.5), 0.5/(args.n_embd**0.5))
         self.value.weight.data.zero_()
-    @MyFunction
-    def forward(self, x):
-        xx = self.time_shift(x) - x
+    # @MyFunction
+    # def forward(self, x):
+    #     xx = self.time_shift(x) - x
 
+    #     k = x + xx * self.x_k
+    #     k = torch.relu(self.key(k)) ** 2
+    #     return self.value(k)
+    @MyFunction
+    def _forward_impl(self, x):
+        xx = self.time_shift(x) - x
         k = x + xx * self.x_k
         k = torch.relu(self.key(k)) ** 2
         return self.value(k)
+    def forward(self, x):
+        if self.grad_cp > 0:
+            return checkpoint(self._forward_impl, x, use_reentrant=False)
+        else:
+            return self._forward_impl(x)
 
 class Block_v2(nn.Module):
     def __init__(self, args, group_id, loops_per_group):
         super().__init__()
         self.args = args
+        self.grad_cp = getattr(args, 'grad_cp', 0)
         self.group_id = group_id
         self.loops_per_group = loops_per_group
 
@@ -239,6 +299,22 @@ class Block_v2(nn.Module):
         x = x + x_attn
         x = x + self.ffn(self.ln2(x))
         return x, v_first
+
+    # def _forward_impl(self, x, v_first):
+    #     """实际的forward实现，用于gradient checkpointing"""
+    #     if self.group_id * self.loops_per_group == 0:
+    #         x = self.ln0(x)
+    #     x_attn, v_first = self.att(self.ln1(x), v_first)
+    #     x = x + x_attn
+    #     x = x + self.ffn(self.ln2(x))
+    #     return x, v_first
+    # def forward(self, x, v_first):
+    #     if self.grad_cp > 0 and self.training:
+    #         # 使用gradient checkpointing
+    #         return checkpoint(self._forward_impl, x, v_first, use_reentrant=False)
+    #     else:
+    #         # 正常forward
+    #         return self._forward_impl(x, v_first)
     
 class BlockGroup(nn.Module):
     def __init__(self, args):

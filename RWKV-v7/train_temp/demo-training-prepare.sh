@@ -14,7 +14,7 @@
 #
 MODEL_TYPE="x070" # x060 => rwkv-6.0
 #
-N_LAYER="80" # 80 layers 4 groups of params, inner 1 block.
+N_LAYER="200" # 80 layers 4 groups of params, inner 1 block.
 N_EMBD="768"
 #
 CTX_LEN="512" # !!! change magic_prime if you change ctx_len !!!
