@@ -446,14 +446,17 @@ class RWKV_shared(pl.LightningModule):
             layers_per_group = int(args.num_hidden_layers / args.num_hidden_groups)
             group_idx = int(i / layers_per_group)
 
+            res_x = x
+            res_v_first = v_first
+
             x_states, v_first_states = self.rwkv_layer_groups[group_idx](x, v_first, output_x=output_x, output_v_first=output_v_first)
 
             if output_x:
                 all_x_states = all_x_states + (x_states,)
             if output_v_first:
                 all_v_first_states = all_v_first_states + (v_first_states,)
-            x = x_states
-            v_first = v_first_states
+            x = res_x + x_states
+            v_first = res_v_first + v_first_states
         x = self.ln_out(x)
         x = self.head(x)
         return x
