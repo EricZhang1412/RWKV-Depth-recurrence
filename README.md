@@ -1,5 +1,6 @@
 # 🎉[2025-5-29] Update: 
-- 🚩RWKV-v7 with cross-layer parameter sharing & gradient checkpointing techniques: located in Branch `47_host_debug`, [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/47_host_debug/RWKV-v7/train_temp/src/model_sharedlayers.py).
+- 🚩RWKV-v7 with cross-layer parameter sharing & gradient checkpointing techniques.
+- 🚩Add recurrence-iter input injection, inspired by Geiping et al.: [Scaling up Test-Time Compute with Latent Reasoning: A Recurrent Depth Approach](https://www.arxiv.org/pdf/2502.05171).: located in Branch `47_host_debug`, [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/47_host_debug/RWKV-v7/train_temp/src/model_sharedlayers.py).
 
 # 🎉[2025-5-28] Update: 
 - 🚩RWKV-v7 with cross-layer parameter sharing technique: located in [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/main/RWKV-v7/train_temp/src/model_sharedlayers.py), inspired by [ALBERT](https://arxiv.org/abs/1909.11942) and [RWKV-6](https://arxiv.org/abs/2404.05892).
