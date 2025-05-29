@@ -11,7 +11,7 @@
 #
 MODEL_TYPE="x070" # x060 => rwkv-6.0
 #
-N_LAYER="200"
+N_LAYER="400"
 N_EMBD="768"
 #
 CTX_LEN="512" # !!! change magic_prime if you change ctx_len !!!

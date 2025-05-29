@@ -58,7 +58,7 @@ if __name__ == "__main__":
 
     ###################### new #######################
     parser.add_argument("--num_hidden_layers", default=400, type=int)
-    parser.add_argument("--num_hidden_groups", default=4, type=int)
+    parser.add_argument("--num_hidden_groups", default=8, type=int)
     parser.add_argument("--inner_group_num", default=1, type=int)
     ##################################################
 
