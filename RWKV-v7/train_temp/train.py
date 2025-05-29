@@ -57,7 +57,7 @@ if __name__ == "__main__":
     parser.add_argument("--my_exit_tokens", default=0, type=int)
 
     ###################### new #######################
-    parser.add_argument("--num_hidden_layers", default=80, type=int)
+    parser.add_argument("--num_hidden_layers", default=40, type=int)
     parser.add_argument("--num_hidden_groups", default=4, type=int)
     parser.add_argument("--inner_group_num", default=1, type=int)
     ##################################################

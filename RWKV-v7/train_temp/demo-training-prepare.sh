@@ -25,8 +25,8 @@ PROJ_DIR="out/L"$N_LAYER"-D"$N_EMBD"-"$MODEL_TYPE # set output folder
 # magic_prime = the largest 3n+2 prime smaller than datalen/ctxlen-1 (= 1498226207/512-1 = 2926222.06 in this case) = 2926181 in this case
 # use https://www.dcode.fr/prime-numbers-search
 #
-CUDA_VISIBLE_DEVICES=0 python train.py --wandb "" --proj_dir $PROJ_DIR \
- --data_file "/online1/sc100116/sc100116/datasets/minipile/minipile" \
+CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py --wandb "" --proj_dir $PROJ_DIR \
+ --data_file "data/minipile" \
  --data_type "binidx" \
  --vocab_size 65536 \
  --my_testing $MODEL_TYPE \

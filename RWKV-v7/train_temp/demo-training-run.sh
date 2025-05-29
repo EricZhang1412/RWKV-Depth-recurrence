@@ -25,7 +25,7 @@ PROJ_DIR="out/L"$N_LAYER"-D"$N_EMBD"-"$MODEL_TYPE # set output folder
 # Larger model => use smaller LR
 # Finetuning => use very small LR, such as 1e-5
 #
-M_BSZ="24" # takes ~9G VRAM here => reduce this to save VRAM, increase this for faster speed
+M_BSZ="16" # takes ~9G VRAM here => reduce this to save VRAM, increase this for faster speed
 LR_INIT="6e-4"
 LR_FINAL="6e-5"
 GRAD_CP=0 # 1 => slower, save VRAM; 0 => faster, more VRAM
@@ -37,11 +37,11 @@ EPOCH_SAVE=10 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens
 # use https://www.dcode.fr/prime-numbers-search
 #
 N_NODE=1 # number of nodes
-GPU_PER_NODE=2 # number of GPUs per node
+GPU_PER_NODE=4 # number of GPUs per node
 #
 DS_BUCKET_MB=200 # set to 2 for consumer GPUs, set to 200 for A100 / H100 (affects speed & vram usage)
 #
-CUDA_VISIBLE_DEVICES=0,1 python train.py \
+CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py \
     --load_model "0" \
     --wandb "Test" \
     --proj_dir $PROJ_DIR \
