@@ -1,3 +1,6 @@
+# 🎉[2025-6-3] Update: 
+- 🚩RWKV-v7-***depth-recur*** inference model for MMLU benchmark, refered to RWKV PyPi Package (for inference model initialization) and [inference code](https://github.com/BlinkDL/RWKV-LM/blob/main/RWKV-v7/rwkv_mmlu_eval.py). in the original RWKV repo. Located in Branch `47_host_debug`, [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/d9dce34bb6e8953aafa08b557fbf377460e2b0a5/RWKV-v7/train_temp/src/model_sharedlayers.py#L714).
+
 # 🎉[2025-5-29] Update: 
 - 🚩RWKV-v7 with cross-layer parameter sharing & gradient checkpointing techniques.
 - 🚩Add recurrence-iter input injection, inspired by Geiping et al.: [Scaling up Test-Time Compute with Latent Reasoning: A Recurrent Depth Approach](https://www.arxiv.org/pdf/2502.05171).: located in Branch `47_host_debug`, [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/47_host_debug/RWKV-v7/train_temp/src/model_sharedlayers.py).
@@ -7,8 +10,14 @@
 
 ## 📝TODO
 <!-- add checkbox -->
-- [ ] 🔍Read papers about looping models and scaling RNNs. Find some basic tasks to train and verify our models.
-> 📑1. [Scaling up Test-Time Compute with Latent Reasoning: A Recurrent Depth Approach](https://www.arxiv.org/pdf/2502.05171)
+- [ ] 🎯Test the models on MMLU benchmark...
+> 💡See 2025-6-3 Update
+- [x] ~~🔍Read papers about looping models and scaling RNNs. Find some basic tasks to train and verify our models.~~
+> 📑1. [Scaling up Test-Time Compute with Latent Reasoning: A Recurrent Depth Approach](https://www.arxiv.org/pdf/2502.05171) \
+> 📑2. [Path Independent Equilibrium Models Can Better Exploit Test-Time Computation](https://arxiv.org/pdf/2211.09961) \
+> 📑3. [End-to-end Algorithm Synthesis with Recurrent Networks: Logical Extrapolation Without Overthinking](https://arxiv.org/pdf/2211.09961), dataset for Logical Extrapolation(算法外推) can be found in this paper: [Datasets for Studying Generalization from Easy to Hard Examples](https://arxiv.org/pdf/2108.06011) \
+> 📑4. [LOOPED TRANSFORMERS FOR LENGTH GENERALIZATION](https://arxiv.org/pdf/2409.15647) \
+> 📑5. [CAN LOOPED TRANSFORMERS LEARN TO IMPLEMENT MULTI-STEP GRADIENT DESCENT FOR IN-CONTEXT LEARNING?](https://arxiv.org/pdf/2410.08292) 
 - [ ] 🔍Add layer memory, optimizer memory and hidden states' memory analysis for RWKV-v7-sharing.
 > 💡Note: RWKV project is based on pytorch-lightning. I am not sure whether the `lightning` and `pytorch-lightning` modules are the same. In `lightning` package, we have this profilers to analyze memory usage. Maybe we can use it to analyze RWKV-v7-sharing memory usage. 
 > > 🔧Still working on it...
