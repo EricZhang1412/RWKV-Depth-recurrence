@@ -10,6 +10,7 @@ vocab.json
 *log/
 test/
 tools/
+RWKV-World-v3-dataset/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
