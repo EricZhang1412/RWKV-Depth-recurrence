@@ -1,5 +1,35 @@
 # 🎉[2025-6-3] Update: 
-- 🚩RWKV-v7-***depth-recur*** inference model for MMLU benchmark, refered to RWKV PyPi Package (for inference model initialization) and [inference code](https://github.com/BlinkDL/RWKV-LM/blob/main/RWKV-v7/rwkv_mmlu_eval.py). in the original RWKV repo. Located in Branch `47_host_debug`, [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/d9dce34bb6e8953aafa08b557fbf377460e2b0a5/RWKV-v7/train_temp/src/model_sharedlayers.py#L714).
+- 🚩RWKV-v7-***depth-recur***(RWKV-DR) inference model for MMLU benchmark, refered to RWKV PyPi Package (for inference model initialization) and [inference code](https://github.com/BlinkDL/RWKV-LM/blob/main/RWKV-v7/rwkv_mmlu_eval.py). in the original RWKV repo. Located in Branch `47_host_debug`, [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/d9dce34bb6e8953aafa08b557fbf377460e2b0a5/RWKV-v7/train_temp/src/model_sharedlayers.py#L714).
+
+## Usage for MMLU Benckmark Testing
+Code for testing is located in [RWKV-Depth-recurrence/RWKV-v7
+/rwkv_mmlu_eval.py](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/47_host_debug/RWKV-v7/rwkv_mmlu_eval.py). You should custumize the following paths:
+- MODEL_NAME in [L34](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/rwkv_mmlu_eval.py#L34), the pretrained/finetuned RWKV-DR model path without file extension suffix ".pth"
+  ``` python
+  (-) MODEL_NAME = "/9950backfile/zjy_2/RWKV-Depth-recurrence/RWKV-v7/train_temp/out/L400-D1024-x070/rwkv-31"
+  (+) MODEL_NAME = {$YOUR-MODEL-PATH}
+  ```
+
+- test and dev dataset path in [L58-59](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/rwkv_mmlu_eval.py#L58C1-L59C46), the MMLU dataset with optimized prompts for RWKV models (see [RWKV-Evals](https://rwkv.cn/docs/RWKV-Eval-Data/RWKV-Evals) for more details about prompt emgineering in RWKV)
+  ``` python
+  (-) mmlu_test = load_from_disk("mmlu_test_dataset")
+      mmlu_dev = load_from_disk("mmlu_dev_dataset")
+  (+) mmlu_test = load_from_disk({$YOUR-mmlu_test_dataset-PATH})
+      mmlu_dev = load_from_disk({$YOUR-mmlu_dev_dataset-PATH})
+  # it's not necessray to change it if you clonr the project unchanged
+  ```
+
+- RWKV_HEAD_SIZE in [L25](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/rwkv_mmlu_eval.py#L25C1-L25C36), the head size of the model, consistent with your training settings
+  ``` python
+  (-) os.environ["RWKV_HEAD_SIZE"] = "64"
+  (+) os.environ["RWKV_HEAD_SIZE"] = {$YOUR-RWKV_HEAD_SIZE}
+  ```
+
+The model definition is in [RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/47_host_debug/RWKV-v7/train_temp/src/model_sharedlayers.py). As you can notice, some new operators are newly introduced [from L574 to L707](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/train_temp/src/model_sharedlayers.py#L574C1-L707C27). This is because the inference model needs tp support incremental inference, KV caching (in RWKV models, there are no actual KV cache, instead, there are `v_states` that represent the hidden states of the recurrent blocks), and efficient inference of single tokens and long sequences. 
+
+Correspondingly, the core CUDA oprators are also slightly different from what are used in training scripts. In [L607-608](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/train_temp/src/model_sharedlayers.py#L607C1-L608C47), you should use `rwkv7_op.cpp` and `rwkv7.cu` (all copied from `rwkv` PyPI package) instead of `wkv7_op.cpp` and `wkv7_cuda.cu`. (I haven't compared these codes so I can't tell what has been changed.) There are a small inconsistency between these two sets of codes. One of the compiling flags in `rwkv7_op.cpp` and `rwkv7.cu` is [`-D_N_={HEAD_SIZE}`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/train_temp/src/model_sharedlayers.py#L48) and no `-D_CHUNK_LEN_={CHUNK_LEN}` flag, while in `wkv7_op.cpp` and `wkv7_cuda.cu` is [`-D_C_={HEAD_SIZE}`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/train_temp/src/model_sharedlayers.py#L48), and [`-D_CHUNK_LEN_={CHUNK_LEN}`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/train_temp/src/model_sharedlayers.py#L48) is remained.
+
+Still, there is one thing I am not sure about. In [L880](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/train_temp/src/model_sharedlayers.py#L880) (same in [L830](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/241811da02c22357daae420c2c2225af6d41df5e/RWKV-v7/train_temp/src/model_sharedlayers.py#L830)), is the looping variable `i` used correctly or is it should be `j`?
 
 # 🎉[2025-5-29] Update: 
 - 🚩RWKV-v7 with cross-layer parameter sharing & gradient checkpointing techniques.
@@ -10,6 +40,8 @@
 
 ## 📝TODO
 <!-- add checkbox -->
+- [ ] 🎯Training on RWKV-World-v3 Dataset (hopefully)...
+- [ ] 🎯Prepare meeting in Thu,6.5 ...
 - [ ] 🎯Test the models on MMLU benchmark...
 > 💡See 2025-6-3 Update
 - [x] ~~🔍Read papers about looping models and scaling RNNs. Find some basic tasks to train and verify our models.~~
