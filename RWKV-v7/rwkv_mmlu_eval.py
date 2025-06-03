@@ -21,20 +21,28 @@ from datasets import load_dataset, load_from_disk
 
 HF_MODE = False # you will get 44.87% for RWKV-x070-World-1.5B-v3-20250127-ctx4096
 
+# RWKV_HEAD_SIZE=64
+os.environ["RWKV_HEAD_SIZE"] = "64"
+os.environ["RWKV_JIT_ON"] = "1"
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+
 ########################################################################################################
 
 if not HF_MODE:
     # download from https://huggingface.co/BlinkDL/rwkv-7-world
-    MODEL_NAME = "/mnt/e/RWKV-Runner/models/RWKV-x070-World-1.5B-v3-20250127-ctx4096"
+    MODEL_NAME = "/9950backfile/zjy_2/RWKV-Depth-recurrence/RWKV-v7/train_temp/out/L400-D1024-x070/rwkv-31"
     print(f"Loading model - {MODEL_NAME}")
 
     os.environ["RWKV_V7_ON"] = '1'
     os.environ["RWKV_JIT_ON"] = "1"
     os.environ["RWKV_CUDA_ON"] = "1"
 
-    from rwkv.model import RWKV
-    from rwkv.utils import PIPELINE
-    model = RWKV(model=MODEL_NAME, strategy="cuda fp16")
+    # from rwkv.model import RWKV
+    from train_temp.src.model_sharedlayers import RWKV_shared, RWKV_shared_inference
+    from train_temp.utils import PIPELINE
+    # model = RWKV_shared(model=MODEL_NAME, strategy="cuda fp16")
+    model = RWKV_shared_inference(model=MODEL_NAME, strategy="cuda fp16")
     pipeline = PIPELINE(model, "rwkv_vocab_v20230424")
     tokenizer = pipeline.tokenizer
 else:
