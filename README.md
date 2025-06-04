@@ -38,6 +38,9 @@ Still, there is one thing I am not sure about. In [L880](https://github.com/Eric
 # 🎉[2025-5-28] Update: 
 - 🚩RWKV-v7 with cross-layer parameter sharing technique: located in [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/main/RWKV-v7/train_temp/src/model_sharedlayers.py), inspired by [ALBERT](https://arxiv.org/abs/1909.11942) and [RWKV-6](https://arxiv.org/abs/2404.05892).
 
+## 📝Meetings
+- 2025-6-5 [[🪄Slides]](https://docs.google.com/presentation/d/1brLaagIpUDOwhBbCOOe1JmeXMRBdm9nK/edit?usp=drive_link&ouid=102165327555351456656&rtpof=true&sd=true)
+
 ## 📝TODO
 <!-- add checkbox -->
 - [ ] 🎯Add Self-adaptive criterion for early-exit scheme
