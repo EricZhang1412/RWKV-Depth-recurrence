@@ -1,3 +1,15 @@
+# 🎉[2025-6-6] Update:
+- 🚩Implementation of RWKV-v7-***depth-recur***(RWKV-DR) training strategies including:
+  - **Curriculum learning**: To ramp up the recurrence times through the training process.
+  - **Truncated Backpropagation**: backpropagate through only the last k iterations of the recurrent unit. (enables us to train with the heavy-tailed Poisson distribution)
+  - **Weighted Loss Function**: optimize the expectation of the loss function L over random samples $x$ from distribution $\mathcal{X}$ and random iteration counts $r$ from distribution $\Lambda$.
+  
+  located in Branch `47_host_debug`, [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers_v2.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/47_host_debug/RWKV-v7/train_temp/src/model_sharedlayers_v2.py).
+
+The instructions of the new hyperparameters are coming soon...
+
+- 🚩Training scripts for RWKV-World-v3 Datasets (subsample-1m/100k). located in Branch `47_host_debug`, [`RWKV-Depth-recurrence/RWKV-v7/train_temp/demo-training-prepare_worldv3.sh`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/47_host_debug/RWKV-v7/train_temp/demo-training-prepare_worldv3.sh) and [`RWKV-Depth-recurrence/RWKV-v7/train_temp/demo-training-run_worldv3.sh`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/47_host_debug/RWKV-v7/train_temp/demo-training-run_worldv3.sh)
+
 # 🎉[2025-6-3] Update: 
 - 🚩RWKV-v7-***depth-recur***(RWKV-DR) inference model for MMLU benchmark, refered to RWKV PyPi Package (for inference model initialization) and [inference code](https://github.com/BlinkDL/RWKV-LM/blob/main/RWKV-v7/rwkv_mmlu_eval.py). in the original RWKV repo. Located in Branch `47_host_debug`, [`RWKV-Depth-recurrence/RWKV-v7/train_temp/src/model_sharedlayers.py`](https://github.com/EricZhang1412/RWKV-Depth-recurrence/blob/d9dce34bb6e8953aafa08b557fbf377460e2b0a5/RWKV-v7/train_temp/src/model_sharedlayers.py#L714).
 
