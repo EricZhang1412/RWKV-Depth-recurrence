@@ -14,8 +14,8 @@
 #
 MODEL_TYPE="x070" # x060 => rwkv-6.0
 #
-# N_LAYER="400" # 80 layers 4 groups of params, inner 1 block.
-N_LAYER="16"
+N_LAYER="16" # 80 layers 4 groups of params, inner 1 block.
+# N_LAYER="16"
 N_EMBD="1024"
 #
 CTX_LEN="512" # !!! change magic_prime if you change ctx_len !!!
@@ -27,7 +27,7 @@ PROJ_DIR="out/L"$N_LAYER"-D"$N_EMBD"-"$MODEL_TYPE # set output folder
 # use https://www.dcode.fr/prime-numbers-search
 #
 CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py --wandb "" --proj_dir $PROJ_DIR \
- --data_file "data/minipile" \
+ --data_file "/9950backfile/zjy_2/RWKV-Depth-recurrence/model_benchmark/RWKV-World-v3-dataset/1m_text_document" \
  --data_type "binidx" \
  --vocab_size 65536 \
  --my_testing $MODEL_TYPE \
@@ -42,8 +42,8 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py --wandb "" --proj_dir $PROJ_DIR \
  --micro_bsz 1 \
  --n_layer $N_LAYER \
  --n_embd $N_EMBD \
- --my_exit_tokens 1498226207 \
- --magic_prime 2926181 \
+ --my_exit_tokens 1106837430 \
+ --magic_prime 2161787 \
  --lr_init 1e-5 \
  --lr_final 1e-5 \
  --warmup_steps 10 \

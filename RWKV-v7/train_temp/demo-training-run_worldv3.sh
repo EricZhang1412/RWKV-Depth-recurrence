@@ -11,8 +11,8 @@
 #
 MODEL_TYPE="x070" # x060 => rwkv-6.0
 #
-# N_LAYER="400"
 N_LAYER="16"
+# N_LAYER="16"
 N_EMBD="1024"
 #
 CTX_LEN="512" # !!! change magic_prime if you change ctx_len !!!
@@ -51,9 +51,9 @@ TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py \
     --train_stage 3 \
     --epoch_count 999999 \
     --epoch_begin 0 \
-    --data_file "data/minipile" \
-    --my_exit_tokens 1498226207 \
-    --magic_prime 2926181 \
+    --data_file "/9950backfile/zjy_2/RWKV-Depth-recurrence/model_benchmark/RWKV-World-v3-dataset/1m_text_document" \
+    --my_exit_tokens 1106837430 \
+    --magic_prime 2161787 \
     --num_nodes $N_NODE \
     --micro_bsz $M_BSZ \
     --n_layer $N_LAYER \

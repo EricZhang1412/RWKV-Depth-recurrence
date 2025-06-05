@@ -57,10 +57,23 @@ if __name__ == "__main__":
     parser.add_argument("--my_exit_tokens", default=0, type=int)
 
     ###################### new #######################
-    parser.add_argument("--num_hidden_layers", default=400, type=int)
+    parser.add_argument("--num_hidden_layers", default=16, type=int)
     parser.add_argument("--num_hidden_groups", default=8, type=int)
     parser.add_argument("--inner_group_num", default=1, type=int)
     ##################################################
+
+    ##################### training args #####################
+    parser.add_argument("--mean_recurrence", default=16, type=int) # mean recurrence steps per sample
+    parser.add_argument("--mean_backprop_depth", default=6, type=int) # how many blocks to backprop
+    parser.add_argument("--sampling_scheme", default='poisson-unbounded', type=str) # how to sample recurrence steps
+    parser.add_argument("--lockstep_n", default=False, type=bool) # 
+    parser.add_argument("--lockstep_k", default=False, type=bool) # 
+    parser.add_argument("--rand_step", default=0.0, type=int) # for convenience to change seed
+    
+    parser.add_argument("--mcleish_throttle", default=True, type=bool) # loss norm with n_grads steps
+    parser.add_argument("--elbayad_weighing", default=True, type=bool) # weighted loss
+    parser.add_argument("--elbayad_exponent", default=0.5, type=float) # weighted loss, with what power should future steps be penalized
+    #########################################################
 
 
 
@@ -210,7 +223,8 @@ if __name__ == "__main__":
     args.vocab_size = train_data.vocab_size
 
     # from src.model import RWKV
-    from src.model_sharedlayers import RWKV_shared
+    # from src.model_sharedlayers import RWKV_shared
+    from src.model_sharedlayers_v2 import RWKV_shared
     model = RWKV_shared(args)
 
     if len(args.load_model) == 0 or args.train_stage == 1:  # shall we build the initial weights?
