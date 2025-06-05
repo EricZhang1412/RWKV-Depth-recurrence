@@ -56,9 +56,10 @@ Still, there is one thing I am not sure about. In [L880](https://github.com/Eric
 ## 📝TODO
 <!-- add checkbox -->
 - [ ] 🎯Add Self-adaptive criterion for early-exit scheme
-- [ ] 🎯Training on RWKV-World-v3 Dataset (hopefully)...
-- [ ] 🎯Prepare meeting in Thu,6.5 ...
-- [ ] 🎯Test the models on MMLU benchmark...
+- [x] ~~🎯Add Training strategies that suits depth-recur models~~
+- [x] ~~🎯Training on RWKV-World-v3 Dataset (hopefully)...~~
+- [x] ~~🎯Prepare meeting in Thu,6.5 ...~~
+- [x] ~~🎯Test the models on MMLU benchmark...~~
 > 💡See 2025-6-3 Update
 - [x] ~~🔍Read papers about looping models and scaling RNNs. Find some basic tasks to train and verify our models.~~
 > 📑1. [Scaling up Test-Time Compute with Latent Reasoning: A Recurrent Depth Approach](https://www.arxiv.org/pdf/2502.05171) \
