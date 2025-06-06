@@ -529,6 +529,28 @@ class RWKV_shared(pl.LightningModule):
         self.ln_out = nn.LayerNorm(args.n_embd)
         self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
 
+        ###############input fusion blocks##################
+        self.input_fusion_blocks = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(2 * args.n_embd, args.n_embd // 2),
+                    nn.Linear(args.n_embd // 2, args.n_embd)
+                )
+                for _ in range(args.num_hidden_groups)
+            ]
+        )
+        ###############v_State fusion blocks##################
+        self.v_state_fusion_blocks = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(2 * args.n_embd, args.n_embd // 2),
+                    nn.Linear(args.n_embd // 2, args.n_embd)
+                )
+                for _ in range(args.num_hidden_groups)
+            ]
+        )
+        #####################################################
+        self.head.weight.data.normal_(mean=0.0, std=0.02)
         self.mean_recurrence = getattr(args,'mean_recurrence', 1)
         self.mcleish_throttle = getattr(args, 'mcleish_throttle', True)
         self.elbayad_weighing = getattr(args, 'elbayad_weighing', True)
@@ -608,8 +630,17 @@ class RWKV_shared(pl.LightningModule):
                 all_x_states = all_x_states + (x_states,)
             if output_v_first:
                 all_v_first_states = all_v_first_states + (v_first_states,)
-            x = res_x + x_states
-            v_first = res_v_first + v_first_states
+            
+            # print(f"res_x shape:{res_x.shape}, x_states shape:{x_states.shape}")
+            # x = res_x + x_states
+            x = torch.cat((res_x, x_states), dim=-1)
+            x = self.input_fusion_blocks[group_idx](x) # input fusion
+            x = x + res_x # residual connection
+            # print(f"res_v_first shape:{res_v_first.shape}, v_first_states shape:{v_first_states.shape}")
+            # v_first = res_v_first + v_first_states
+            v_first = torch.cat((res_v_first, v_first_states), dim=-1)
+            v_first = self.v_state_fusion_blocks[group_idx](v_first) # v_state fusion
+            v_first = v_first + res_v_first # residual connection
         x = self.ln_out(x)
         x = self.head(x)
         out = (x, n_nograd, n_grad)
