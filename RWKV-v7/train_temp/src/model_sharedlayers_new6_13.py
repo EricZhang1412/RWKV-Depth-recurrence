@@ -257,7 +257,6 @@ class RWKV_CMix_x070_v2(MyModule):
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
 
         num_all_layers = args.num_hidden_groups * args.inner_group_num
-
         with torch.no_grad():
             ratio_1_to_almost0 = 1.0 - (group_id * loops_per_group / num_all_layers)  # 1 to ~0
             ddd = torch.ones(1, 1, args.n_embd)
@@ -348,12 +347,8 @@ class BlockGroup(nn.Module):
             output_x,
             output_v_first,
         ):
-        # n_nograd, n_grad = self.loop_sampler()
-        # # print("n_nograd", n_nograd.item(), "n_grad", n_grad.item())
-        # n_nograd, n_grad = int(n_nograd.item()), int(n_grad.item())
         layer_x_states = ()
         layer_v_first_states = ()
-
         for rwkv_layer in self.rwkv_layers:
             x_states, v_first_states = rwkv_layer(x, v_first) # layer_output[0] is x, layer_output[1] is v_first
 
@@ -362,38 +357,13 @@ class BlockGroup(nn.Module):
             if output_v_first:
                 layer_v_first_states = layer_v_first_states + (v_first_states,)
 
-        outputs = (x_states, v_first_states)
-        if output_x:
-            outputs = outputs + (layer_x_states,)
-        if output_v_first:
-            outputs = outputs + (layer_v_first_states,)
-        # ###################################################### [NEW] #########################################
-        # ### no gradient calculation for n_nograd steps
-        # with torch.no_grad():
-        #     for _ in range(n_nograd):
-        #         for rwkv_layer in self.rwkv_layers:
-        #             x, v_first = rwkv_layer(x, v_first) # layer_output[0] is x, layer_output[1] is v_first
-        #             if output_x:
-        #                 layer_x_states = layer_x_states + (x,)
-        #             if output_v_first:
-        #                 layer_v_first_states = layer_v_first_states + (v_first,)
-        # ### gradient calculation for n_grad steps
-        # for _ in range(n_grad):
-        #     for rwkv_layer in self.rwkv_layers:
-        #         x, v_first = rwkv_layer(x, v_first) # layer_output[0] is x, layer_output[1] is v_first
-        #         if output_x:
-        #             layer_x_states = layer_x_states + (x,)
-        #         if output_v_first:
-        #             layer_v_first_states = layer_v_first_states + (v_first,)
+        
 
-        # outputs = (x, v_first)
-        # out_looptimes = (n_nograd, n_grad)
+        outputs = (x_states, v_first_states)
         # if output_x:
         #     outputs = outputs + (layer_x_states,)
         # if output_v_first:
         #     outputs = outputs + (layer_v_first_states,)
-
-        # return outputs, out_looptimes
         return outputs
 
 class L2Wrap(torch.autograd.Function):
@@ -423,16 +393,7 @@ class RWKV_shared(pl.LightningModule):
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
-        ###########settings of looping sampling##############
-        self.mean_recurrence = getattr(args, 'mean_recurrence', 1)
-        self.mean_backprop_depth = getattr(args,'mean_backprop_depth', 1)
-        self.sampling_scheme = getattr(args,'sampling_scheme', 'constant')
-        self.lockstep_n = getattr(args,'lockstep_n', 1)
-        self.lockstep_k = getattr(args,'lockstep_k', 1)
-        self.rand_step = getattr(args,'rand_step', 0)
-        self.mcleish_throttle = getattr(args, 'mcleish_throttle', True)
-        self.elbayad_weighing = getattr(args, 'elbayad_weighing', True)
-        self.elbayad_exponent = getattr(args, 'elbayad_exponent', 0.5) # need to check
+
         #####################################################
         self.injection_type = getattr(args, 'injection_type', 'none')
 
@@ -446,8 +407,6 @@ class RWKV_shared(pl.LightningModule):
                 args.n_embd,
                 bias=True,
             )
-        # elif injection_type == "ffn":
-        #     adapter = config.MLP(config, layer_id=0, in_features=config.n_embd * 2)
 
     def configure_optimizers(self):
         args = self.args
@@ -490,101 +449,6 @@ class RWKV_shared(pl.LightningModule):
             return cfg.get("offload_optimizer") or cfg.get("offload_param")
         return False
 
-    def loop_sampler(self):
-        # sampling seed generating
-        seed_n = 514229 + self.rand_step
-        seed_k = 317811 + self.rand_step
-
-        if not self.lockstep_n and torch.distributed.is_initialized():
-            seed_n = seed_n * (torch.distributed.get_rank() + 1)
-        if not self.lockstep_k and torch.distributed.is_initialized():
-            seed_k = seed_k * (torch.distributed.get_rank() + 1)
-        
-        n_generator = torch.Generator(device="cpu")
-        n_generator.manual_seed(int(seed_n % (2**31 - 1)))
-        k_generator = torch.Generator(device="cpu")
-        k_generator.manual_seed(int(seed_k % (2**31 - 1)))
-        # add curriculum learning scheme
-        if "curriculum-" in self.sampling_scheme:
-            ramp_length = int(self.sampling_scheme.split("curriculum-")[1])
-            if self.step > ramp_length: # up to max
-                t = max(self.mean_recurrence - self.mean_backprop_depth, 0)
-                s = self.mean_backprop_depth
-            else:
-                slope = self.step / ramp_length
-                t = max(math.ceil(slope * (self.mean_recurrence - self.mean_backprop_depth)), 0)
-                s = max(math.ceil(slope * self.mean_backprop_depth), 1)
-        else:
-            t = max(self.mean_recurrence - self.mean_backprop_depth, 0)
-            s = self.mean_backprop_depth
-        
-        if "bptt" in self.sampling_scheme:  # skewed toward n+k ~ max_recurrence
-            n = torch.randint(low=0, high=t * 2, size=(1,), generator=n_generator)
-            k = torch.randint(low=1, high=1 + min(t * 2 - int(n.item()), s * 2), size=(1,), generator=k_generator)
-        elif "non-uniform" in self.sampling_scheme:  # n+k ~ uniform, n ~ 1
-            n_plus_k = torch.randint(low=0, high=2 * t, size=(1,), generator=n_generator)
-            k = torch.randint(low=1, high=2 * min(t, s) + 1, size=(1,), generator=k_generator)
-            n = torch.clamp(n_plus_k - k, min=0)
-        elif "gupta" in self.sampling_scheme:  # skewed toward n+k ~ uniform, k ~ 1
-            # https://github.com/aks2203/deep-thinking/issues/10
-            n = torch.randint(low=0, high=t * 2, size=(1,), generator=n_generator)
-            draw = torch.rand(size=(1,), generator=k_generator)
-            skew = torch.randint(low=2 * t, high=t * 8, size=(1,), generator=k_generator)
-            k = 1 + (t - n) * draw**skew
-        elif "simple" in self.sampling_scheme:  # me not make complicate? n + k ~trapezoidal
-            n = torch.randint(low=0, high=2 * t, size=(1,), generator=n_generator)
-            k = torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
-        elif "poisson-lognormal-filling" in self.sampling_scheme:
-            sigma = 0.5
-            mu = math.log(t + s) - (sigma**2 / 2)
-            rate = torch.zeros((1,)).log_normal_(mean=mu, std=sigma, generator=n_generator)
-            p = torch.poisson(torch.tensor([rate], dtype=torch.float), generator=n_generator) + 1
-            n = torch.clamp(p - s, min=0)
-            k = torch.as_tensor(torch.minimum(torch.as_tensor(s), p))
-        elif "poisson-lognormal-fill" in self.sampling_scheme:
-            sigma = 0.5
-            mu = math.log(t) - (sigma**2 / 2)
-            rate = torch.zeros((1,)).log_normal_(mean=mu, std=sigma, generator=n_generator)
-            n = torch.poisson(torch.tensor([rate], dtype=torch.float), generator=n_generator)
-            k = torch.as_tensor(s)
-        elif "poisson-lognormal" in self.sampling_scheme:
-            sigma = 0.5
-            mu = math.log(t) - (sigma**2 / 2)
-            rate = torch.zeros((1,)).log_normal_(mean=mu, std=sigma, generator=n_generator)
-            n = torch.poisson(torch.tensor([rate], dtype=torch.float), generator=n_generator)
-            k = torch.randint(1, 2 * s + 1, (1,), generator=k_generator)
-        elif "poisson-unbounded" in self.sampling_scheme:
-            n = torch.poisson(torch.tensor([t], dtype=torch.float), generator=n_generator)
-            k = torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
-        elif "poisson-fill" in self.sampling_scheme:
-            n = torch.poisson(torch.tensor([t], dtype=torch.float), generator=n_generator)
-            k = torch.as_tensor(s)
-        elif "poisson-bounded" in self.sampling_scheme:
-            n = torch.minimum(
-                torch.poisson(torch.tensor([t], dtype=torch.float), generator=n_generator),
-                torch.as_tensor(2 * t - 1),
-            )
-            k = torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
-        elif "negative-binomial" in self.sampling_scheme:
-            n = torch.as_tensor(sample_negative_binomial(2 * t, t))
-            k = torch.randint(1, 2 * s + 1, (1,))
-        elif "sobol" in self.sampling_scheme:  # this is sobol+simple
-            nk_generator = torch.quasirandom.SobolEngine(dimension=2, scramble=True, seed=seed_n)
-            n_, k_ = nk_generator.draw(1).flatten()
-            n = (n_ * 2 * t).to(torch.long)
-            k = (k_ * 2 * s + 1).to(torch.long)
-        elif "geometric" in self.sampling_scheme:
-            n = torch.as_tensor(1.0).geometric_(1 / t, generator=n_generator)
-            k = torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
-        elif "fixed" in self.sampling_scheme:
-            n, k = torch.as_tensor(t), torch.as_tensor(s)
-        elif "non-recurrent" in self.sampling_scheme:
-            n, k = torch.as_tensor(0), torch.as_tensor(1)
-        elif "full" in self.sampling_scheme:
-            n, k = torch.as_tensor(0), torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
-        
-        return n.to(dtype=torch.long), k.to(dtype=torch.long)
-
     def forward(
         self, 
         idx,
@@ -598,13 +462,8 @@ class RWKV_shared(pl.LightningModule):
         all_x_states = ()
         all_v_first_states = ()
 
-        n_nograd, n_grad = self.loop_sampler()
-        # print("n_nograd", n_nograd.item(), "n_grad", n_grad.item())
-        n_nograd, n_grad = int(n_nograd.item()), int(n_grad.item())
-
         x = self.emb(idx)
         v_first = torch.empty_like(x)
-
         ########## Get the number of the rwkv_shared groups ##########
         num_hidden_groups = len(self.rwkv_layer_groups)
         num_inner_layers = len(self.rwkv_layer_groups[0].rwkv_layers)
@@ -613,52 +472,11 @@ class RWKV_shared(pl.LightningModule):
         settings_num_inner_layers = args.inner_group_num
         assert num_hidden_groups == settings_num_hidden_groups, "The number of hidden groups does not match the settings."
         assert num_inner_layers == settings_num_inner_layers, "The number of inner layers does not match the settings."
+
+        # print(f"num_hidden_groups: {num_hidden_groups}")
+        # print(f"num_inner_layers: {num_inner_layers}")
         ##############################################################
 
-        ### no gradient calculation for n_nograd groups
-        with torch.no_grad():
-            for _ in range(n_nograd):
-                for i in range(num_hidden_groups):
-                    res_x = x
-                    res_v_first = v_first
-
-                    outputs = self.rwkv_layer_groups[i](x, v_first, output_x=output_x, output_v_first=output_v_first)
-                    x_states, v_first_states = outputs[0], outputs[1]
-                    if output_x:
-                        all_x_states = all_x_states + (x_states,)
-                    if output_v_first:
-                        all_v_first_states = all_v_first_states + (v_first_states,)
-
-                    if self.injection_type == "add":
-                        x = res_x + x_states
-                        v_first = res_v_first + v_first_states
-                    # elif self.injection_type == "gate":
-                    #     x = x * input_embeds
-                    elif self.injection_type in ["linear", "ffn"]:
-                        x = self.input_injection_adapter(torch.cat([res_x, x_states], dim=-1))
-                        v_first = self.input_injection_adapter(torch.cat([res_v_first, v_first_states], dim=-1))
-                    
-        ### gradient calculation for n_grad groups
-        for _ in range(n_grad):
-            for i in range(num_hidden_groups):
-                res_x = x
-                res_v_first = v_first
-                outputs = self.rwkv_layer_groups[i](x, v_first, output_x=output_x, output_v_first=output_v_first)
-                x_states, v_first_states = outputs[0], outputs[1]
-                if output_x:
-                    all_x_states = all_x_states + (x_states,)
-                if output_v_first:
-                    all_v_first_states = all_v_first_states + (v_first_states,)
-                if self.injection_type == "add":
-                        x = res_x + x_states
-                        v_first = res_v_first + v_first_states
-                # elif self.injection_type == "gate":
-                #     x = x * input_embeds
-                elif self.injection_type in ["linear", "ffn"]:
-                    x = self.input_injection_adapter(torch.cat([res_x, x_states], dim=-1))
-                    v_first = self.input_injection_adapter(torch.cat([res_v_first, v_first_states], dim=-1))
-        x = self.ln_out(x)
-        x = self.head(x)
         # for i in range(args.num_hidden_layers):
         #     layers_per_group = int(args.num_hidden_layers / args.num_hidden_groups)
         #     group_idx = int(i / layers_per_group)
@@ -666,8 +484,7 @@ class RWKV_shared(pl.LightningModule):
         #     res_x = x
         #     res_v_first = v_first
 
-        #     outputs = self.rwkv_layer_groups[group_idx](x, v_first, output_x=output_x, output_v_first=output_v_first)
-        #     x_states, v_first_states = outputs[0], outputs[1]
+        #     x_states, v_first_states = self.rwkv_layer_groups[group_idx](x, v_first, output_x=output_x, output_v_first=output_v_first)
 
         #     if output_x:
         #         all_x_states = all_x_states + (x_states,)
@@ -675,31 +492,33 @@ class RWKV_shared(pl.LightningModule):
         #         all_v_first_states = all_v_first_states + (v_first_states,)
         #     x = res_x + x_states
         #     v_first = res_v_first + v_first_states
-        # x = self.ln_out(x)
-        # x = self.head(x)
-        out = (x, n_nograd, n_grad)
-        return out
+        # import pdb; pdb.set_trace()
+        for i in range(num_hidden_groups):
+            res_x = x
+            res_v_first = v_first
+            outputs = self.rwkv_layer_groups[i](x, v_first, output_x=output_x, output_v_first=output_v_first)
+            x_states, v_first_states = outputs[0], outputs[1]
+            if output_x:
+                all_x_states = all_x_states + (x_states,)
+            if output_v_first:
+                all_v_first_states = all_v_first_states + (v_first_states,)
+
+            if self.injection_type == "add":
+                x = res_x + x_states
+                v_first = res_v_first + v_first_states
+            # elif self.injection_type == "gate":
+            #     x = x * input_embeds
+            elif self.injection_type in ["linear", "ffn"]:
+                x = self.input_injection_adapter(torch.cat([res_x, x_states], dim=-1))
+                v_first = self.input_injection_adapter(torch.cat([res_v_first, v_first_states], dim=-1))
+        x = self.ln_out(x)
+        x = self.head(x)
+        return x
 
     def training_step(self, batch, batch_idx):
         idx, targets = batch
-        out = self(idx)
-        logits = out[0] 
-        n_grad = out[1]
-        n_nograd = out[2]
-
+        logits = self(idx)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
-        ###################### [NEW] Design for Loss ######################
-        if self.mcleish_throttle:
-            loss = loss / n_grad
-
-        # weighted loss
-        if self.elbayad_weighing:
-            t = self.mean_recurrence
-            weights = torch.arange(1, 16 * t, device=loss.device) ** self.elbayad_exponent
-            weights /= torch.sum(torch.arange(1, t + 1, device=loss.device) ** self.elbayad_exponent, dim=0)
-            this_weight = weights[n_nograd + n_grad] / weights[t // 2]
-            loss = loss * this_weight
-
         return L2Wrap.apply(loss, logits)
     
     def training_step_end(self, batch_parts):
@@ -874,7 +693,6 @@ if os.environ.get('RWKV_CUDA_ON') == '1':
 
         kk = torch.nn.functional.normalize((k * k_k).view(T,H,N), dim=-1, p=2.0).view(T,H*N)
         k = k * (1 + (a-1) * k_a)
-        pdb.set_trace()
         if layer_id == 0: v_first = v
         else: v = v + (v_first - v) * torch.sigmoid(v0 + (xv @ v1) @ v2)
 
@@ -979,7 +797,6 @@ class RWKV_shared_inference(MyModule):
         self.num_hidden_layers = args.num_hidden_layers
         self.num_hidden_groups = args.num_hidden_groups
         self.inner_group_num = args.inner_group_num
-        self.max_steps = getattr(args,'max_steps', -1)
         
 
         args.n_layer = 0
@@ -1008,9 +825,9 @@ class RWKV_shared_inference(MyModule):
         self.z['emb.weight'] = F.layer_norm(
             self.z['emb.weight'], (args.n_embd,), weight=self.z['rwkv_layer_groups.0.rwkv_layers.0.ln0.weight'], bias=self.z['rwkv_layer_groups.0.rwkv_layers.0.ln0.bias']
         )
-        self.z['rwkv_layer_groups.0.rwkv_layers.0.att.v0'] = torch.empty(0, device=DEVICE, dtype=DTYPE) # actually ignored
-        self.z['rwkv_layer_groups.0.rwkv_layers.0.att.v1'] = torch.empty(0, device=DEVICE, dtype=DTYPE) # actually ignored
-        self.z['rwkv_layer_groups.0.rwkv_layers.0.att.v2'] = torch.empty(0, device=DEVICE, dtype=DTYPE) # actually ignored
+        self.z['blocks.0.att.v0'] = torch.empty(0, device=DEVICE, dtype=DTYPE) # actually ignored
+        self.z['blocks.0.att.v1'] = torch.empty(0, device=DEVICE, dtype=DTYPE) # actually ignored
+        self.z['blocks.0.att.v2'] = torch.empty(0, device=DEVICE, dtype=DTYPE) # actually ignored
         torch.cuda.empty_cache()
 
     def forward(self, idx, state, full_output=False):
@@ -1035,7 +852,6 @@ class RWKV_shared_inference(MyModule):
             z = self.z
             x = z['emb.weight'][idx]
 
-            max_steps = self.max_steps
             v_first = torch.empty_like(x)
             # layer-wise processing
             for i in range(self.num_hidden_layers):
@@ -1087,9 +903,6 @@ class RWKV_shared_inference(MyModule):
             z = self.z
             x = z['emb.weight'][idx]
             v_first = torch.empty_like(x)
-
-            # import pdb; pdb.set_trace()
-
             for i in range(self.num_hidden_layers):
                 layers_per_group = int(self.num_hidden_layers / self.num_hidden_groups)
                 loops_per_inner_block = int(layers_per_group / self.inner_group_num)
@@ -1108,7 +921,7 @@ class RWKV_shared_inference(MyModule):
 
                 #### mapping from loop constant 'i' to actual looped layer index 'j'
                 j = i % (self.num_hidden_groups * self.inner_group_num)
-                print(j)
+
                 xx, state[j*3+0], state[j*3+1], v_first = RWKV_x070_TMix_seq(
                     i, # or maybe 'i' is better? i or j?
                     self.n_head,

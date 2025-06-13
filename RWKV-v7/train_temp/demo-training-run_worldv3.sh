@@ -11,7 +11,7 @@
 #
 MODEL_TYPE="x070" # x060 => rwkv-6.0
 #
-N_LAYER="16"
+N_LAYER="32"
 # N_LAYER="16"
 N_EMBD="1024"
 #
@@ -30,7 +30,7 @@ M_BSZ="16" # takes ~9G VRAM here => reduce this to save VRAM, increase this for 
 LR_INIT="5e-4"
 LR_FINAL="5e-5"
 GRAD_CP=1 # 1 => slower, save VRAM; 0 => faster, more VRAM
-EPOCH_SAVE=5 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens) => decrease if your GPU is weak
+EPOCH_SAVE=2 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens) => decrease if your GPU is weak
 #
 #######################################################################################################################
 #
@@ -38,11 +38,11 @@ EPOCH_SAVE=5 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens)
 # use https://www.dcode.fr/prime-numbers-search
 #
 N_NODE=1 # number of nodes
-GPU_PER_NODE=4 # number of GPUs per node
+GPU_PER_NODE=8 # number of GPUs per node
 #
 DS_BUCKET_MB=200 # set to 2 for consumer GPUs, set to 200 for A100 / H100 (affects speed & vram usage)
 #
-TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py \
+TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train.py \
     --load_model "0" \
     --wandb "" \
     --proj_dir $PROJ_DIR \
@@ -51,7 +51,7 @@ TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES=4,5,6,7 python train.py \
     --train_stage 3 \
     --epoch_count 999999 \
     --epoch_begin 0 \
-    --data_file "/9950backfile/zjy_2/RWKV-Depth-recurrence/model_benchmark/RWKV-World-v3-dataset/1m_text_document" \
+    --data_file "/data/datasets/RWKV-World-v3/1m_text_document" \
     --my_exit_tokens 1106837430 \
     --magic_prime 2161787 \
     --num_nodes $N_NODE \
