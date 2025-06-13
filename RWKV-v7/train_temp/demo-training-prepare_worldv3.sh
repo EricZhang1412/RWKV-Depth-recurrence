@@ -16,7 +16,7 @@ MODEL_TYPE="x070" # x060 => rwkv-6.0
 #
 N_LAYER="32" # 80 layers 4 groups of params, inner 1 block.
 # N_LAYER="16"
-N_EMBD="1024"
+N_EMBD="2048"
 #
 CTX_LEN="512" # !!! change magic_prime if you change ctx_len !!!
 PROJ_DIR="out/L"$N_LAYER"-D"$N_EMBD"-"$MODEL_TYPE # set output folder
