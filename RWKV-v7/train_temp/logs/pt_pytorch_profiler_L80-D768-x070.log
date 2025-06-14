@@ -1,0 +1,58 @@
+INFO:pytorch_lightning.profilers.profiler:FIT Profiler Report
+Profile stats for: records rank: 0
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          ProfilerStep*         8.23%     635.482ms        43.46%        3.356s        1.119s       0.000us         0.00%     394.227ms     131.409ms             3  
+      [pl][profile][Strategy]DeepSpeedStrategy.backward        29.74%        2.296s        30.10%        2.324s     774.706ms       0.000us         0.00%      16.574ms       5.525ms             3  
+                        [pl][profile]run_training_batch         0.20%      15.357ms        28.62%        2.210s        1.105s       0.000us         0.00%     672.381ms     336.190ms             2  
+[pl][profile][LightningModule]RWKV_shared.optimizer_...        20.84%        1.609s        28.42%        2.195s        1.097s       0.000us         0.00%     672.381ms     336.190ms             2  
+                                       cudaLaunchKernel        14.88%        1.149s        14.88%        1.149s      23.051us       0.000us         0.00%       0.000us       0.000us         49848  
+[pl][profile][Strategy]DeepSpeedStrategy.training_st...         0.12%       9.346ms        11.41%     880.743ms     293.581ms       0.000us         0.00%        1.008s     336.104ms             3  
+                                               aten::mm         3.48%     268.829ms         8.54%     659.228ms      76.220us        1.240s        39.79%        1.240s     143.376us          8649  
+      autograd::engine::evaluate_function: MulBackward0         0.60%      46.058ms         7.64%     590.131ms     163.789us       0.000us         0.00%     321.347ms      89.189us          3603  
+       autograd::engine::evaluate_function: MmBackward0         0.40%      30.544ms         7.58%     585.208ms     202.986us       0.000us         0.00%     819.703ms     284.323us          2883  
+                                            MmBackward0         0.26%      19.917ms         6.78%     523.294ms     181.510us       0.000us         0.00%     815.840ms     282.983us          2883  
+                                              aten::mul         1.38%     106.855ms         5.39%     415.858ms      35.272us     378.238ms        12.14%     378.238ms      32.081us         11790  
+                                             aten::add_         0.63%      48.360ms         4.24%     327.198ms      28.366us     101.049ms         3.24%     101.049ms       8.760us         11535  
+                                           MulBackward0         0.16%      12.087ms         4.06%     313.420ms      86.989us       0.000us         0.00%     203.862ms      56.581us          3603  
+[pl][module]src.model_sharedlayers.BlockGroup: rwkv_...         0.05%       3.491ms         3.56%     274.942ms       4.582ms       0.000us         0.00%     242.428ms       4.040ms            60  
+[pl][module]src.model_sharedlayers.Block_v2: rwkv_la...         0.12%       9.322ms         3.52%     271.452ms       4.524ms       0.000us         0.00%     242.428ms       4.040ms            60  
+[pl][module]src.model_sharedlayers.BlockGroup: rwkv_...         0.02%       1.722ms         2.78%     214.830ms       3.581ms       0.000us         0.00%     241.945ms       4.032ms            60  
+[pl][module]src.model_sharedlayers.Block_v2: rwkv_la...         0.05%       3.798ms         2.76%     213.109ms       3.552ms       0.000us         0.00%     241.945ms       4.032ms            60  
+                                           aten::matmul         0.17%      13.082ms         2.75%     211.981ms      73.528us       0.000us         0.00%     424.220ms     147.145us          2883  
+[pl][module]src.model_sharedlayers.BlockGroup: rwkv_...         0.03%       2.675ms         2.70%     208.534ms       3.476ms       0.000us         0.00%     242.005ms       4.033ms            60  
+[pl][module]src.model_sharedlayers.Block_v2: rwkv_la...         0.09%       6.829ms         2.67%     205.859ms       3.431ms       0.000us         0.00%     242.005ms       4.033ms            60  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 7.722s
+Self CUDA time total: 3.117s
+
+
+INFO:pytorch_lightning.profilers.profiler:FIT Profiler Report
+Profile stats for: records rank: 0
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg       CPU Mem  Self CPU Mem      CUDA Mem  Self CUDA Mem    # of Calls  Total GFLOPs  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          ProfilerStep*         8.93%     702.364ms        44.06%        3.467s        1.156s       0.000us         0.00%     432.636ms     144.212ms           0 b         -12 b       4.00 Kb     139.15 Gb             3            --  
+      [pl][profile][Strategy]DeepSpeedStrategy.backward        29.29%        2.305s        29.74%        2.340s     780.078ms       0.000us         0.00%      15.724ms       5.241ms         -24 b         -24 b    -212.84 Gb    -215.67 Gb             3            --  
+                        [pl][profile]run_training_batch         0.24%      18.589ms        29.44%        2.317s     772.248ms       0.000us         0.00%     673.278ms     224.426ms           0 b           0 b       1.00 Kb      -1.00 Kb             3            --  
+[pl][profile][LightningModule]RWKV_shared.optimizer_...        21.11%        1.661s        29.21%        2.298s     766.052ms       0.000us         0.00%     673.278ms     224.426ms           0 b           0 b       2.00 Kb    -142.27 Gb             3            --  
+[pl][profile][Strategy]DeepSpeedStrategy.training_st...         0.17%      13.403ms        11.98%     943.088ms     314.363ms       0.000us         0.00%        1.010s     336.553ms           0 b           0 b     213.41 Gb     -54.00 Mb             3            --  
+                                       cudaLaunchKernel         9.48%     746.206ms         9.48%     746.214ms      14.970us       0.000us         0.00%       0.000us       0.000us           0 b           0 b           0 b           0 b         49848            --  
+                                               aten::mm         3.78%     297.463ms         7.30%     574.603ms      66.436us        1.240s        40.13%        1.240s     143.393us           0 b           0 b     112.37 Gb     112.37 Gb          8649    143331.649  
+       autograd::engine::evaluate_function: MmBackward0         0.52%      40.608ms         7.29%     573.898ms     199.063us       0.000us         0.00%     819.294ms     284.181us           0 b           0 b     -43.49 Gb     -99.32 Gb          2883            --  
+      autograd::engine::evaluate_function: MulBackward0         0.81%      63.509ms         6.49%     510.321ms     141.638us       0.000us         0.00%     321.214ms      89.152us         -24 b         -24 b     -29.60 Gb    -156.23 Gb          3603            --  
+                                            MmBackward0         0.59%      46.380ms         6.46%     508.136ms     176.253us       0.000us         0.00%     815.519ms     282.872us           0 b           0 b      55.83 Gb           0 b          2883            --  
+[pl][module]src.model_sharedlayers.BlockGroup: rwkv_...         0.06%       4.422ms         4.07%     320.347ms       5.339ms       0.000us         0.00%     243.478ms       4.058ms           0 b           0 b      51.08 Gb           0 b            60            --  
+[pl][module]src.model_sharedlayers.Block_v2: rwkv_la...         0.15%      12.047ms         4.01%     315.925ms       5.265ms       0.000us         0.00%     243.478ms       4.058ms           0 b           0 b      51.08 Gb      -4.22 Gb            60            --  
+                                              aten::mul         1.60%     125.546ms         3.65%     287.045ms      24.346us     378.466ms        12.25%     378.466ms      32.101us           0 b           0 b     232.03 Gb     232.03 Gb         11790       120.112  
+                                             aten::add_         0.80%      62.668ms         3.05%     240.287ms      20.831us     100.879ms         3.26%     100.879ms       8.745us           0 b           0 b           0 b           0 b         11535            --  
+[pl][module]src.model_sharedlayers.BlockGroup: rwkv_...         0.04%       3.506ms         3.04%     239.101ms       3.985ms       0.000us         0.00%     242.260ms       4.038ms           0 b           0 b      51.08 Gb           0 b            60            --  
+[pl][module]src.model_sharedlayers.Block_v2: rwkv_la...         0.11%       8.955ms         2.99%     235.596ms       3.927ms       0.000us         0.00%     242.260ms       4.038ms           0 b           0 b      51.08 Gb      -4.22 Gb            60            --  
+                                           MulBackward0         0.39%      30.964ms         2.97%     233.843ms      64.902us       0.000us         0.00%     203.943ms      56.604us           0 b           0 b     126.56 Gb           0 b          3603            --  
+[pl][module]src.model_sharedlayers.RWKV_Tmix_x070_v2...         0.68%      53.152ms         2.86%     225.196ms       3.753ms       0.000us         0.00%     166.450ms       2.774ms           0 b           0 b      38.41 Gb     -18.04 Gb            60            --  
+                                           aten::matmul         0.35%      27.219ms         2.63%     206.899ms      71.765us       0.000us         0.00%     424.684ms     147.306us           0 b           0 b      56.54 Gb           0 b          2883            --  
+[pl][module]src.model_sharedlayers.BlockGroup: rwkv_...         0.03%       2.616ms         2.37%     186.286ms       3.105ms       0.000us         0.00%     241.985ms       4.033ms           0 b           0 b      51.08 Gb           0 b            60            --  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 7.869s
+Self CUDA time total: 3.091s
