@@ -588,8 +588,8 @@ class L2Wrap(torch.autograd.Function):
 def sample_repeat_layers(
         num_layers: int,
         min_repeat: int = 1,
-        max_repeat: int = 32,
-        repeat_prob: float = 0.5,
+        max_repeat: int = 6,
+        repeat_prob: float = 0.7,
     ) -> dict:
         """
         随机采样每一层是否要 repeat，以及重复多少次
@@ -1006,10 +1006,16 @@ class RWKV_shared(pl.LightningModule):
     ):
         args = self.args
         B, T = idx.size()
+
+        if torch.any(idx < 0) or torch.any(idx >= self.args.vocab_size):
+            print(f"[Error] idx out of bounds in forward(): min={idx.min().item()}, max={idx.max().item()}, vocab_size={self.args.vocab_size}")
+            raise ValueError("Input token index out of bounds.")
+
         assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
 
         all_x_states = ()
         all_v_first_states = ()
+        all_logits = []
 
         x = self.emb(idx)
         v_first = torch.empty_like(x)
@@ -1057,20 +1063,53 @@ class RWKV_shared(pl.LightningModule):
                     x = x + x_states
                     v_first = v_first + v_first_states
                 elif self.injection_type in ["linear", "ffn"]:
-                    x = self.input_injection_adapter(torch.cat([x, x_states], dim=-1))
-                    v_first = self.input_injection_adapter(torch.cat([v_first, v_first_states], dim=-1))
+                    # x = self.input_injection_adapter(torch.cat([x, x_states], dim=-1))
+                    x = self.input_injection_adapter(torch.cat([
+                            F.layer_norm(x, x.shape[-1:]),
+                            F.layer_norm(x_states, x_states.shape[-1:])
+                        ], dim=-1))
+                    # v_first = self.input_injection_adapter(torch.cat([v_first, v_first_states], dim=-1))
+                    v_first = self.input_injection_adapter(torch.cat([
+                            F.layer_norm(v_first, v_first.shape[-1:]),
+                            F.layer_norm(v_first_states, v_first_states.shape[-1:])
+                        ], dim=-1))
                 else:
                     raise NotImplementedError(f"Unknown injection type: {self.injection_type}")
 
+            logits = self.head(self.ln_out(x))
+            all_logits.append(logits)
+
         x = self.ln_out(x)
         x = self.head(x)
-        return x
+
+        all_logits.append(x)
+
+        ######### get all loop times from "repeat_layers"
+        total_repeat_times = sum(repeat_layers.values())
+        # mean_repeat_times = total_repeat_times / len(self.rwkv_layer_groups)
+        return all_logits, total_repeat_times
     
     def training_step(self, batch, batch_idx):
         idx, targets = batch
-        logits = self(idx)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
-        return L2Wrap.apply(loss, logits)
+        # logits, total_repeat_times = self(idx)
+        logits_list, total_repeat_times = self(idx)
+        # print(f"total_repeat_times: {total_repeat_times}")
+        # print(f"logits_list length: {len(logits_list)}")
+        elbayad_exponent = getattr(self.args, "elbayad_exponent", 1.6)
+        weights = torch.arange(1, len(logits_list)+1, device=logits_list[0].device, dtype=torch.float32)
+        weights = weights ** elbayad_exponent
+        weights = weights / weights.sum()
+
+        total_loss = 0
+        for i, logits in enumerate(logits_list):
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            # loss = loss / total_repeat_times
+            total_loss += weights[i] * loss
+
+        return L2Wrap.apply(total_loss, logits_list[-1])
+
+        # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        # return L2Wrap.apply(loss, logits)
 
     def training_step_end(self, batch_parts):
         all = self.all_gather(batch_parts)
