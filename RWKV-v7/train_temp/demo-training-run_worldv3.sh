@@ -26,9 +26,9 @@ PROJ_DIR="out/L"$N_LAYER"-D"$N_EMBD"-"$MODEL_TYPE # set output folder
 # Larger model => use smaller LR
 # Finetuning => use very small LR, such as 1e-5
 #
-M_BSZ="16" # takes ~9G VRAM here => reduce this to save VRAM, increase this for faster speed
-LR_INIT="5e-4"
-LR_FINAL="5e-5"
+M_BSZ="64" # takes ~9G VRAM here => reduce this to save VRAM, increase this for faster speed
+LR_INIT="4e-4"
+LR_FINAL="4e-5"
 GRAD_CP=1 # 1 => slower, save VRAM; 0 => faster, more VRAM
 EPOCH_SAVE=2 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens) => decrease if your GPU is weak
 #
@@ -42,6 +42,8 @@ GPU_PER_NODE=8 # number of GPUs per node
 #
 DS_BUCKET_MB=200 # set to 2 for consumer GPUs, set to 200 for A100 / H100 (affects speed & vram usage)
 #
+NCCL_DEBUG=INFO
+
 TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train.py \
     --load_model "0" \
     --wandb "" \

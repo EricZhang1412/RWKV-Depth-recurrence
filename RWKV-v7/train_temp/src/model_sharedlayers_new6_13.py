@@ -395,6 +395,13 @@ class RWKV_shared(pl.LightningModule):
         assert args.dim_ffn % 32 == 0
 
         #####################################################
+        self.rand_step = getattr(args, 'rand_step', 0)
+        self.mean_recurrence = getattr(args, 'mean_recurrence', 1)
+        self.mean_backprop_depth = getattr(args,'mean_backprop_depth', 1)
+        self.sampling_scheme = getattr(args, 'sampling_scheme', 'none')
+        self.lockstep_n = getattr(args,'lockstep_n', False)
+        self.lockstep_k = getattr(args,'lockstep_k', False)
+
         self.injection_type = getattr(args, 'injection_type', 'none')
 
         self.emb = nn.Embedding(args.vocab_size, args.n_embd)
@@ -449,6 +456,103 @@ class RWKV_shared(pl.LightningModule):
             return cfg.get("offload_optimizer") or cfg.get("offload_param")
         return False
 
+    @torch._dynamo.disable(recursive=False)
+    def loop_sampler(self):
+        # sampling seed generating
+        seed_n = 514229 + self.rand_step
+        seed_k = 317811 + self.rand_step
+
+        if not self.lockstep_n and torch.distributed.is_initialized():
+            seed_n = seed_n * (torch.distributed.get_rank() + 1)
+        if not self.lockstep_k and torch.distributed.is_initialized():
+            seed_k = seed_k * (torch.distributed.get_rank() + 1)
+        
+        n_generator = torch.Generator(device="cpu")
+        n_generator.manual_seed(int(seed_n % (2**31 - 1)))
+        k_generator = torch.Generator(device="cpu")
+        k_generator.manual_seed(int(seed_k % (2**31 - 1)))
+
+        # add curriculum learning scheme
+        if "curriculum-" in self.sampling_scheme:
+            ramp_length = int(self.sampling_scheme.split("curriculum-")[1])
+            if self.step > ramp_length: # up to max
+                t = max(self.mean_recurrence - self.mean_backprop_depth, 0)
+                s = self.mean_backprop_depth
+            else:
+                slope = self.step / ramp_length
+                t = max(math.ceil(slope * (self.mean_recurrence - self.mean_backprop_depth)), 0)
+                s = max(math.ceil(slope * self.mean_backprop_depth), 1)
+        else:
+            t = max(self.mean_recurrence - self.mean_backprop_depth, 0)
+            s = self.mean_backprop_depth
+        
+        if "bptt" in self.sampling_scheme:  # skewed toward n+k ~ max_recurrence
+            n = torch.randint(low=0, high=t * 2, size=(1,), generator=n_generator)
+            k = torch.randint(low=1, high=1 + min(t * 2 - int(n.item()), s * 2), size=(1,), generator=k_generator)
+        elif "non-uniform" in self.sampling_scheme:  # n+k ~ uniform, n ~ 1
+            n_plus_k = torch.randint(low=0, high=2 * t, size=(1,), generator=n_generator)
+            k = torch.randint(low=1, high=2 * min(t, s) + 1, size=(1,), generator=k_generator)
+            n = torch.clamp(n_plus_k - k, min=0)
+        elif "gupta" in self.sampling_scheme:  # skewed toward n+k ~ uniform, k ~ 1
+            # https://github.com/aks2203/deep-thinking/issues/10
+            n = torch.randint(low=0, high=t * 2, size=(1,), generator=n_generator)
+            draw = torch.rand(size=(1,), generator=k_generator)
+            skew = torch.randint(low=2 * t, high=t * 8, size=(1,), generator=k_generator)
+            k = 1 + (t - n) * draw**skew
+        elif "simple" in self.sampling_scheme:  # me not make complicate? n + k ~trapezoidal
+            n = torch.randint(low=0, high=2 * t, size=(1,), generator=n_generator)
+            k = torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
+        elif "poisson-lognormal-filling" in self.sampling_scheme:
+            sigma = 0.5
+            mu = math.log(t + s) - (sigma**2 / 2)
+            rate = torch.zeros((1,)).log_normal_(mean=mu, std=sigma, generator=n_generator)
+            p = torch.poisson(torch.tensor([rate], dtype=torch.float), generator=n_generator) + 1
+            n = torch.clamp(p - s, min=0)
+            k = torch.as_tensor(torch.minimum(torch.as_tensor(s), p))
+        elif "poisson-lognormal-fill" in self.sampling_scheme:
+            sigma = 0.5
+            mu = math.log(t) - (sigma**2 / 2)
+            rate = torch.zeros((1,)).log_normal_(mean=mu, std=sigma, generator=n_generator)
+            n = torch.poisson(torch.tensor([rate], dtype=torch.float), generator=n_generator)
+            k = torch.as_tensor(s)
+        elif "poisson-lognormal" in self.sampling_scheme:
+            sigma = 0.5
+            mu = math.log(t) - (sigma**2 / 2)
+            rate = torch.zeros((1,)).log_normal_(mean=mu, std=sigma, generator=n_generator)
+            n = torch.poisson(torch.tensor([rate], dtype=torch.float), generator=n_generator)
+            k = torch.randint(1, 2 * s + 1, (1,), generator=k_generator)
+        elif "poisson-unbounded" in self.sampling_scheme:
+            n = torch.poisson(torch.tensor([t], dtype=torch.float), generator=n_generator)
+            k = torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
+        elif "poisson-fill" in self.sampling_scheme:
+            n = torch.poisson(torch.tensor([t], dtype=torch.float), generator=n_generator)
+            k = torch.as_tensor(s)
+        elif "poisson-bounded" in self.sampling_scheme:
+            n = torch.minimum(
+                torch.poisson(torch.tensor([t], dtype=torch.float), generator=n_generator),
+                torch.as_tensor(2 * t - 1),
+            )
+            k = torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
+        elif "negative-binomial" in self.sampling_scheme:
+            n = torch.as_tensor(sample_negative_binomial(2 * t, t))
+            k = torch.randint(1, 2 * s + 1, (1,))
+        elif "sobol" in self.sampling_scheme:  # this is sobol+simple
+            nk_generator = torch.quasirandom.SobolEngine(dimension=2, scramble=True, seed=seed_n)
+            n_, k_ = nk_generator.draw(1).flatten()
+            n = (n_ * 2 * t).to(torch.long)
+            k = (k_ * 2 * s + 1).to(torch.long)
+        elif "geometric" in self.sampling_scheme:
+            n = torch.as_tensor(1.0).geometric_(1 / t, generator=n_generator)
+            k = torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
+        elif "fixed" in self.sampling_scheme:
+            n, k = torch.as_tensor(t), torch.as_tensor(s)
+        elif "non-recurrent" in self.sampling_scheme:
+            n, k = torch.as_tensor(0), torch.as_tensor(1)
+        elif "full" in self.sampling_scheme:
+            n, k = torch.as_tensor(0), torch.randint(low=1, high=2 * s + 1, size=(1,), generator=k_generator)
+        
+        return n.to(dtype=torch.long), k.to(dtype=torch.long)
+
     def forward(
         self, 
         idx,
@@ -476,23 +580,6 @@ class RWKV_shared(pl.LightningModule):
         # print(f"num_hidden_groups: {num_hidden_groups}")
         # print(f"num_inner_layers: {num_inner_layers}")
         ##############################################################
-
-        # for i in range(args.num_hidden_layers):
-        #     layers_per_group = int(args.num_hidden_layers / args.num_hidden_groups)
-        #     group_idx = int(i / layers_per_group)
-
-        #     res_x = x
-        #     res_v_first = v_first
-
-        #     x_states, v_first_states = self.rwkv_layer_groups[group_idx](x, v_first, output_x=output_x, output_v_first=output_v_first)
-
-        #     if output_x:
-        #         all_x_states = all_x_states + (x_states,)
-        #     if output_v_first:
-        #         all_v_first_states = all_v_first_states + (v_first_states,)
-        #     x = res_x + x_states
-        #     v_first = res_v_first + v_first_states
-        # import pdb; pdb.set_trace()
         for i in range(num_hidden_groups):
             res_x = x
             res_v_first = v_first
@@ -511,6 +598,56 @@ class RWKV_shared(pl.LightningModule):
             elif self.injection_type in ["linear", "ffn"]:
                 x = self.input_injection_adapter(torch.cat([res_x, x_states], dim=-1))
                 v_first = self.input_injection_adapter(torch.cat([res_v_first, v_first_states], dim=-1))
+
+        ###############################################################
+        # num_steps_no_grad, num_steps_with_grad = self.loop_sampler()
+        # print(f"num_steps_no_grad: {num_steps_no_grad}", f"num_steps_with_grad: {num_steps_with_grad}")
+        # repeat_layers = {7: 3, 10: 2}  # group 7 重复3次，group 10重复2次
+        repeat_layers = {
+            0: 1,
+            1: 3,
+            2: 1,
+            3: 1,
+            4: 1,
+            5: 1,
+            6: 1,
+            7: 3,
+            8: 1,
+            9: 1,
+            10: 2,
+            11: 1,
+            12: 1,
+            13: 1,
+            14: 1,
+            15: 1,
+        }
+        total_steps = len(self.rwkv_layer_groups)  # 假设你用了所有 group
+
+        for i in range(total_steps):
+            repeat_count = repeat_layers.get(i, 1)  # 默认为1次
+
+            for _ in range(repeat_count):
+                outputs = self.rwkv_layer_groups[i](
+                    x, v_first,
+                    output_x=output_x,
+                    output_v_first=output_v_first
+                )
+                x_states, v_first_states = outputs[0], outputs[1]
+
+                if output_x:
+                    all_x_states += (x_states,)
+                if output_v_first:
+                    all_v_first_states += (v_first_states,)
+
+                if self.injection_type == "add":
+                    x = x + x_states
+                    v_first = v_first + v_first_states
+                elif self.injection_type in ["linear", "ffn"]:
+                    x = self.input_injection_adapter(torch.cat([x, x_states], dim=-1))
+                    v_first = self.input_injection_adapter(torch.cat([v_first, v_first_states], dim=-1))
+                else:
+                    raise NotImplementedError(f"Unknown injection type: {self.injection_type}")
+
         x = self.ln_out(x)
         x = self.head(x)
         return x

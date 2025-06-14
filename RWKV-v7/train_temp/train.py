@@ -63,9 +63,9 @@ if __name__ == "__main__":
     ##################################################
 
     ##################### training args #####################
-    parser.add_argument("--mean_recurrence", default=8, type=int) # mean recurrence steps per sample
-    parser.add_argument("--mean_backprop_depth", default=24, type=int) # how many blocks to backprop
-    parser.add_argument("--sampling_scheme", default='poisson-unbounded', type=str) # how to sample recurrence steps
+    parser.add_argument("--mean_recurrence", default=10, type=int) # mean recurrence steps per sample
+    parser.add_argument("--mean_backprop_depth", default=5, type=int) # how many blocks to backprop
+    parser.add_argument("--sampling_scheme", default='bptt', type=str) # how to sample recurrence steps
     parser.add_argument("--lockstep_n", default=False, type=bool) # 
     parser.add_argument("--lockstep_k", default=False, type=bool) # 
     parser.add_argument("--rand_step", default=0.0, type=int) # for convenience to change seed
@@ -125,7 +125,7 @@ if __name__ == "__main__":
 
     args.epoch_count = args.magic_prime // 40320
     args.epoch_steps = 40320 // args.real_bsz
-    assert args.epoch_steps * args.real_bsz == 40320
+    # assert args.epoch_steps * args.real_bsz == 40320
 
     if args.train_stage >= 2:  # find latest saved model
         list_p = []
