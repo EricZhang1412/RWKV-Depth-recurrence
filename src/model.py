@@ -7,7 +7,7 @@ import importlib
 import math
 import os
 import pdb, types, time, re, random
-from typing import List
+from typing import List, Dict
 
 import pytorch_lightning as pl
 import torch
@@ -45,8 +45,8 @@ if os.environ["RWKV_JIT_ON"] == "1":
 ########################################################################################################
 
 
-HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE"])
-
+# HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE"])
+HEAD_SIZE = 64
 RWKV_TEST_DEMO=True
 USE_CUDA_KERNEL=False
 USE_CUDA_FAST_KERNEL=True
@@ -131,7 +131,7 @@ if RWKV_TEST_DEMO:
     if USE_CUDA_FAST_KERNEL:
         load(name="wkv7s", sources=["cuda/wkv7s_op_infer.cpp", f"cuda/wkv7s_infer.cu"], is_python_module=False,
                     verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}"])
-    
+
     if not USE_CUDA_FAST_KERNEL and USE_CUDA_KERNEL:
 
         from torch.utils.cpp_extension import load
@@ -499,7 +499,7 @@ class RWKV_Tmix_x070_v2(nn.Module):
             return checkpoint(self._forward_impl, x, v_first, use_reentrant=False)
         else:
             return self._forward_impl(x, v_first)
-
+    
 class RWKV_CMix_x070(nn.Module):
     def __init__(self, args, layer_id):
         super().__init__()
@@ -567,6 +567,30 @@ class RWKV_CMix_x070_v2(nn.Module):
         else:
             return self._forward_impl(x)
 
+@torch.jit.script
+def sample_logits(logits, temperature:float=1.0, top_p:float=1.0, top_k:int=0):
+    probs = F.softmax(logits.float(), dim=-1)
+    sorted_probs, sorted_ids = torch.sort(probs, descending=True)
+    
+    if top_k > 0:
+        probs[sorted_ids[top_k:]] = 0
+
+    if top_p < 1:
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        cutoff_index = torch.searchsorted(cumulative_probs, top_p)
+        cutoff = sorted_probs[cutoff_index]
+        probs[probs < cutoff] = 0
+
+        if top_p > 0:
+            idx = torch.where(probs == cutoff)[0]
+            if len(idx) > 0:
+                probs[idx] = cutoff + (top_p - torch.sum(probs).item()) / len(idx)
+                # assert abs(torch.sum(probs).item() - top_p) < 1e-6
+    
+    if temperature != 1.0:
+        probs = probs ** (1.0 / temperature)
+
+    return torch.multinomial(probs, num_samples=1).item()
 ########################################################################################################
 # The RWKV Model with our blocks
 ########################################################################################################
@@ -671,12 +695,13 @@ class L2Wrap(torch.autograd.Function):
         gy.scatter_(-1, ids, maxx * factor)
         return (grad_output, gy)
 
+@torch.jit.ignore
 def sample_repeat_layers(
         num_layers: int,
         min_repeat: int = 1,
-        max_repeat: int = 4,
+        max_repeat: int = 12,
         repeat_prob: float = 0.4,
-    ) -> dict:
+    ):
         """
         随机采样每一层是否要 repeat，以及重复多少次
         :param num_layers: 总共的 group 层数
@@ -1345,10 +1370,105 @@ class WKV_7_fast(torch.autograd.Function):
             y = torch.empty((T, C), device=k.device, dtype=DTYPE, requires_grad=False, memory_format=torch.contiguous_format)
             torch.ops.wkv7s.forward(1, T, C, H, state, r, w, k, v, a, b, y)
             return y
-def RWKV7_OP(state, r, w, k, v, a, b):
+def RWKV7_OPS(state, r, w, k, v, a, b):
     return WKV_7_fast.apply(state, r, w, k, v, a, b)
 
-class RWKV_x070_infer(nn.Module):
+@torch.jit.script
+def RWKV_Tmix_x070_v2_infer_one(
+    group_id: int,
+    loops_per_group: int,
+    H:int, 
+    N:int, 
+    x, x_prev, v_first, state, 
+    x_r, x_w, x_k, x_v, x_a, x_g, 
+    w0, w1, w2, 
+    a0, a1, a2, 
+    v0, v1, v2, 
+    g1, g2, 
+    k_k, k_a, r_k, 
+    R_, K_, V_, O_, 
+    ln_w, ln_b
+):
+    xx = x_prev - x
+    xr, xw, xk, xv, xa, xg = x+xx*x_r, x+xx*x_w, x+xx*x_k, x+xx*x_v, x+xx*x_a, x+xx*x_g
+    r = xr @ R_
+    w = torch.tanh(xw @ w1) @ w2
+    k = xk @ K_
+    v = xv @ V_
+    a = torch.sigmoid(a0 + (xa @ a1) @ a2)
+    g = torch.sigmoid(xg @ g1) @ g2
+    kk = torch.nn.functional.normalize((k * k_k).view(H,N), dim=-1, p=2.0).view(H*N)
+    k = k * (1 + (a-1) * k_a)
+    if group_id * loops_per_group == 0:
+        v_first = v
+    else:
+        v = torch.lerp(v, v_first, torch.sigmoid(v0 + (xv @ v1) @ v2))
+    
+    w = torch.exp(-0.606531 * torch.sigmoid((w0 + w).float()))
+    
+    vk = v.view(H,N,1) @ k.view(H,1,N)
+    ab = (-kk).view(H,N,1) @ (kk*a).view(H,1,N)
+    state = state * w.view(H,1,N) + state @ ab.float() + vk.float()
+    xx = (state.to(dtype=x.dtype) @ r.view(H,N,1))
+    xx = torch.nn.functional.group_norm(xx.view(1,H*N), num_groups=H, weight=ln_w, bias=ln_b, eps = 64e-5).view(H*N)    
+    xx = xx + ((r * k * r_k).view(H,N).sum(dim=-1, keepdim=True) * v.view(H,N)).view(H*N)
+    return (xx * g) @ O_, x, state, v_first
+
+@torch.jit.script
+def RWKV_Tmix_x070_v2_infer_seq(
+    group_id: int,
+    loops_per_group: int,
+    H:int, 
+    N:int, 
+    x, x_prev, v_first, state, 
+    x_r, x_w, x_k, x_v, x_a, x_g, 
+    w0, w1, w2, 
+    a0, a1, a2, 
+    v0, v1, v2, 
+    g1, g2, 
+    k_k, k_a, r_k, 
+    R_, K_, V_, O_, 
+    ln_w, ln_b
+):
+    T = x.shape[0]
+    xx = torch.cat((x_prev.unsqueeze(0), x[:-1,:])) - x
+    xr, xw, xk, xv, xa, xg = x+xx*x_r, x+xx*x_w, x+xx*x_k, x+xx*x_v, x+xx*x_a, x+xx*x_g
+    r = xr @ R_
+    w = torch.tanh(xw @ w1) @ w2
+    k = xk @ K_
+    v = xv @ V_
+    a = torch.sigmoid(a0 + (xa @ a1) @ a2)
+    g = torch.sigmoid(xg @ g1) @ g2
+    kk = torch.nn.functional.normalize((k * k_k).view(T,H,N), dim=-1, p=2.0).view(T,H*N)
+    k = k * (1 + (a-1) * k_a)
+    if group_id * loops_per_group == 0:
+        v_first = v
+    else:
+        v = torch.lerp(v, v_first, torch.sigmoid(v0 + (xv @ v1) @ v2))
+
+    w = -torch.nn.functional.softplus(-(w0 + w)) - 0.5
+    xx = RWKV7_OPS(state, r, w, k, v, -kk, kk*a)
+
+    xx = torch.nn.functional.group_norm(xx.view(T,H*N), num_groups=H, weight=ln_w, bias=ln_b, eps = 64e-5).view(T,H*N)
+    xx = xx + ((r * k * r_k).view(T,H,N).sum(dim=-1, keepdim=True) * v.view(T,H,N)).view(T,H*N)
+    return (xx * g) @ O_, x[-1,:], state, v_first
+
+@torch.jit.script
+def RWKV_x070_CMix_one(x, x_prev, x_k, K_, V_):
+    xx = x_prev - x
+    k = x + xx * x_k
+    k = torch.relu(k @ K_) ** 2
+    return k @ V_, x
+
+@torch.jit.script
+def RWKV_x070_CMix_seq(x, x_prev, x_k, K_, V_):
+    xx = torch.cat((x_prev.unsqueeze(0), x[:-1,:])) - x
+    k = x + xx * x_k
+    k = torch.relu(k @ K_) ** 2
+    return k @ V_, x[-1,:]
+
+
+class RWKV_x070_infer(torch.jit.ScriptModule):
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -1380,9 +1500,9 @@ class RWKV_x070_infer(nn.Module):
             tot_layers = self.num_hidden_groups * self.inner_group_num
             state = [None for _ in range(tot_layers * 3)]
             for i in range(tot_layers): # state: 0=att_x_prev 1=att_kv 2=ffn_x_prev
-                state[i*3+0] = torch.zeros(args.n_embd, dtype=DTYPE, requires_grad=False, device="cuda")
-                state[i*3+1] = torch.zeros((args.n_embd // args.head_size, args.head_size, args.head_size), dtype=torch.float, requires_grad=False, device="cuda")
-                state[i*3+2] = torch.zeros(args.n_embd, dtype=DTYPE, requires_grad=False, device="cuda")
+                state[i*3+0] = torch.zeros(self.n_embd, dtype=DTYPE, requires_grad=False, device="cuda")
+                state[i*3+1] = torch.zeros((self.n_embd // self.head_size, self.head_size, self.head_size), dtype=torch.float, requires_grad=False, device="cuda")
+                state[i*3+2] = torch.zeros(self.n_embd, dtype=DTYPE, requires_grad=False, device="cuda")
 
         if type(idx) is list:
             if len(idx) > 1:
@@ -1392,63 +1512,61 @@ class RWKV_x070_infer(nn.Module):
         else:
             return self.forward_one(idx, state)
 
-    @MyFunction
+    @torch.jit.script_method
     def forward_one(self, idx:int, state:List[torch.Tensor]):
         with torch.no_grad(): 
             z = self.z
             x = z['emb.weight'][idx]
 
             v_first = torch.empty_like(x)
-            for i in range(self.n_layer):
-                bbb = f'blocks.{i}.'
-                att = f'blocks.{i}.att.'
-                ffn = f'blocks.{i}.ffn.'
 
-                xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
+            tot_layers = self.num_hidden_groups * self.inner_group_num
 
-                xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
-                    z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
-                    z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
-                    z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
-                    z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'],
-                    z[att+'ln_x.weight'], z[att+'ln_x.bias'])
-                x = x + xx
+            for i in range(self.num_hidden_groups):
+                for j in range(self.inner_group_num):
+                    bbb = f'rwkv_layer_groups.{i}.rwkv_layers.{j}.'
+                    att = bbb + 'att.'
+                    ffn = bbb + 'ffn.'
+                    xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
+                    xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
+                        z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
+                        z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
+                        z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
+                        z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'],
+                        z[att+'ln_x.weight'], z[att+'ln_x.bias'])
+                    x = x + xx
+                    xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
 
-                xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
-
-                xx, state[i*3+2] = RWKV_x070_CMix_one(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
-                x = x + xx
+                    xx, state[i*3+2] = RWKV_x070_CMix_one(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
+                    x = x + xx
             
             x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
             x = x @ z['head.weight']
             return x, state
         
-    @MyFunction
+    @torch.jit.script_method
     def forward_seq(self, idx:List[int], state:List[torch.Tensor], full_output:bool=False):
         with torch.no_grad(): 
             z = self.z
             x = z['emb.weight'][idx]
 
             v_first = torch.empty_like(x)
-            for i in range(self.n_layer):
-                bbb = f'blocks.{i}.'
-                att = f'blocks.{i}.att.'
-                ffn = f'blocks.{i}.ffn.'
-
-                xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
-
-                xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_seq(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
-                    z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
-                    z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
-                    z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
-                    z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'],
-                    z[att+'ln_x.weight'], z[att+'ln_x.bias'])
-                x = x + xx
-
-                xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
-
-                xx, state[i*3+2] = RWKV_x070_CMix_seq(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
-                x = x + xx
+            
+            for i in range(self.num_hidden_groups):
+                for j in range(self.inner_group_num):
+                    bbb = f'rwkv_layer_groups.{i}.rwkv_layers.{j}.'
+                    att = bbb + 'att.'
+                    ffn = bbb + 'ffn.'
+                    xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
+                    xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_seq(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
+                        z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
+                        z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
+                        z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
+                        z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'], z[att+'ln_x.weight'], z[att+'ln_x.bias'])
+                    x = x + xx
+                    xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
+                    xx, state[i*3+2] = RWKV_x070_CMix_seq(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
+                    x = x + xx
             
             if not full_output: x = x[-1,:]
             x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
@@ -1512,7 +1630,7 @@ def RWKV_x070_TMix_seq(layer_id: int, H:int, N:int, x, x_prev, v_first, state, x
     #     xx[t] = (state.to(dtype=x.dtype) @ r_.view(H,N,1)).view(H*N)
 
     w = -torch.nn.functional.softplus(-(w0 + w)) - 0.5
-    xx = RWKV7_OP(state, r, w, k, v, -kk, kk*a)
+    xx = RWKV7_OPS(state, r, w, k, v, -kk, kk*a)
 
     xx = torch.nn.functional.group_norm(xx.view(T,H*N), num_groups=H, weight=ln_w, bias=ln_b, eps = 64e-5).view(T,H*N)
     xx = xx + ((r * k * r_k).view(T,H,N).sum(dim=-1, keepdim=True) * v.view(T,H,N)).view(T,H*N)
@@ -1533,3 +1651,345 @@ def RWKV_x070_CMix_seq(x, x_prev, x_k, K_, V_):
     k = x + xx * x_k
     k = torch.relu(k @ K_) ** 2
     return k @ V_, x[-1,:]
+
+
+import random
+from typing import List, Optional, Dict, Tuple
+
+class RWKV_x070_infer_v2(torch.jit.ScriptModule):
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        self.n_embd = args.n_embd
+        self.num_hidden_groups = args.num_hidden_groups
+        self.inner_group_num = args.inner_group_num
+        self.eval()
+        
+        # Adaptive loop parameters
+        self.adaptive_loop_enabled = getattr(args, 'adaptive_loop_enabled', False)
+        self.min_repeat = getattr(args, 'min_repeat', 1)
+        self.max_repeat = getattr(args, 'max_repeat', 12)
+        self.repeat_prob = getattr(args, 'repeat_prob', 0.4)
+        self.injection_type = getattr(args, 'injection_type', 'add')
+        
+        # Early exit parameters
+        self.early_exit_enabled = getattr(args, 'early_exit_enabled', False)
+        self.confidence_threshold = getattr(args, 'confidence_threshold', 0.95)
+        self.stability_threshold = getattr(args, 'stability_threshold', 1e-3)
+        self.stability_check_layers = getattr(args, 'stability_check_layers', 3)
+        self.max_compute_steps = getattr(args, 'max_compute_steps', None)
+        
+        MODEL_NAME = "/data/projects/RWKV-LM-V7-Depth-recur/out/L32-D2048-x070/rwkv-52.pth"
+        self.z = torch.load(MODEL_NAME, map_location='cuda')
+        z = self.z
+        self.n_head, self.head_size = z['rwkv_layer_groups.0.rwkv_layers.0.att.r_k'].shape
+
+        keys = list(z.keys())
+        for k in keys:
+            if 'key.weight' in k or 'value.weight' in k or 'receptance.weight' in k or 'output.weight' in k or 'head.weight' in k:
+                z[k] = z[k].t()
+            z[k] = z[k].squeeze().to(dtype=DTYPE)
+            if k.endswith('att.r_k'): z[k] = z[k].flatten()
+        assert self.head_size == args.head_size
+
+        z['emb.weight'] = F.layer_norm(z['emb.weight'], (args.n_embd,), weight=z['rwkv_layer_groups.0.rwkv_layers.0.ln0.weight'], bias=z['rwkv_layer_groups.0.rwkv_layers.0.ln0.bias'])
+        z['rwkv_layer_groups.0.rwkv_layers.0.att.v0'] = z['rwkv_layer_groups.0.rwkv_layers.0.att.a0'] # actually ignored
+        z['rwkv_layer_groups.0.rwkv_layers.0.att.v1'] = z['rwkv_layer_groups.0.rwkv_layers.0.att.a1'] # actually ignored
+        z['rwkv_layer_groups.0.rwkv_layers.0.att.v2'] = z['rwkv_layer_groups.0.rwkv_layers.0.att.a2'] # actually ignored
+
+        if self.adaptive_loop_enabled:
+            self.repeat_layers = sample_repeat_layers(
+                num_layers=self.num_hidden_groups,
+                min_repeat=1,
+                max_repeat=8,
+                repeat_prob=0.6
+            )
+        else:
+            self.repeat_layers = {}
+
+    def check_early_exit_condition(
+        self, 
+        x: torch.Tensor, 
+        prev_outputs: List[torch.Tensor],
+        compute_steps: int
+    ) -> bool:
+        """
+        检查是否满足早退条件
+        """
+        if not self.early_exit_enabled:
+            return False
+            
+        # 检查最大计算步数
+        if self.max_compute_steps and compute_steps >= self.max_compute_steps:
+            print(f"Reached max compute_steps:{self.max_compute_steps}\n")
+            return True
+            
+        # 获取当前logits并检查confidence
+        current_logits = F.layer_norm(x, (self.n_embd,), weight=self.z['ln_out.weight'], bias=self.z['ln_out.bias'])
+        current_logits = current_logits @ self.z['head.weight']
+        
+        # 检查confidence阈值
+        if self.confidence_threshold:
+            probs = F.softmax(current_logits, dim=-1)
+            max_prob = torch.max(probs)
+            if max_prob > self.confidence_threshold:
+                print(f"probs {max_prob} Reached max confidence_threshold:{self.confidence_threshold}\n")
+                return True
+        
+        # # 检查输出稳定性
+        # if len(prev_outputs) >= self.stability_check_layers and self.stability_threshold:
+        #     recent_outputs = prev_outputs[-self.stability_check_layers:]
+        #     if len(recent_outputs) >= 2:
+        #         diffs = []
+        #         for i in range(1, len(recent_outputs)):
+        #             diff = torch.mean(torch.abs(recent_outputs[i] - recent_outputs[i-1]))
+        #             diffs.append(diff)
+        #         avg_diff = torch.mean(torch.stack(diffs))
+        #         if avg_diff < self.stability_threshold:
+        #             return True
+
+        # 检查输出稳定性
+        print(f"[DEBUG] 检查稳定性条件: 历史输出数量={len(prev_outputs)}, 需要层数={self.stability_check_layers}, 阈值={self.stability_threshold}")
+        if len(prev_outputs) >= self.stability_check_layers and self.stability_threshold:
+            recent_outputs = prev_outputs[-self.stability_check_layers:]
+            print(f"[DEBUG] 最近{self.stability_check_layers}层输出形状: {[o.shape for o in recent_outputs]}")
+            if len(recent_outputs) >= 2:
+                diffs = []
+                for i in range(1, len(recent_outputs)):
+                    diff = torch.mean(torch.abs(recent_outputs[i] - recent_outputs[i-1]))
+                    diffs.append(diff)
+                    print(f"[DEBUG] 第{i}层与第{i-1}层差异: {diff:.6f}")
+                avg_diff = torch.mean(torch.stack(diffs))
+                print(f"[DEBUG] 平均差异: {avg_diff:.6f}, 阈值: {self.stability_threshold}")
+                if avg_diff < self.stability_threshold:
+                    print("[DEBUG] 输出已稳定!")
+                    return True
+        
+        return False
+
+    def process_group_with_repeat(
+        self,
+        group_idx: int,
+        x: torch.Tensor,
+        v_first: torch.Tensor,
+        state: List[torch.Tensor],
+        repeat_count: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        处理单个group的重复执行逻辑
+        """
+        original_x = x.clone()
+        original_v_first = v_first.clone()
+        
+        for repeat_step in range(repeat_count):
+            # 保存当前状态用于可能的injection
+            x_before_group = x.clone()
+            v_first_before_group = v_first.clone()
+            
+            # 执行当前group的所有inner layers
+            for j in range(self.inner_group_num):
+                layer_idx = group_idx * self.inner_group_num + j
+                state_offset = layer_idx * 3
+                
+                bbb = f'rwkv_layer_groups.{group_idx}.rwkv_layers.{j}.'
+                att = bbb + 'att.'
+                ffn = bbb + 'ffn.'
+                
+                # Attention block
+                xx = F.layer_norm(x, (self.n_embd,), weight=self.z[bbb+'ln1.weight'], bias=self.z[bbb+'ln1.bias'])
+                if len(xx.shape) < 2:
+                    xx, state[state_offset+0], state[state_offset+1], v_first = RWKV_x070_TMix_one(
+                        group_idx, self.n_head, self.head_size, xx, state[state_offset+0], v_first, state[state_offset+1],
+                        self.z[att+'x_r'], self.z[att+'x_w'], self.z[att+'x_k'], self.z[att+'x_v'], self.z[att+'x_a'], self.z[att+'x_g'],
+                        self.z[att+'w0'], self.z[att+'w1'], self.z[att+'w2'], self.z[att+'a0'], self.z[att+'a1'], self.z[att+'a2'], 
+                        self.z[att+'v0'], self.z[att+'v1'], self.z[att+'v2'],
+                        self.z[att+'g1'], self.z[att+'g2'], self.z[att+'k_k'], self.z[att+'k_a'], self.z[att+'r_k'],
+                        self.z[att+'receptance.weight'], self.z[att+'key.weight'], self.z[att+'value.weight'], self.z[att+'output.weight'],
+                        self.z[att+'ln_x.weight'], self.z[att+'ln_x.bias']
+                    )
+                else: 
+                    xx, state[state_offset+0], state[state_offset+1], v_first = RWKV_x070_TMix_seq(
+                        group_idx, self.n_head, self.head_size, xx, state[state_offset+0], v_first, state[state_offset+1],
+                        self.z[att+'x_r'], self.z[att+'x_w'], self.z[att+'x_k'], self.z[att+'x_v'], self.z[att+'x_a'], self.z[att+'x_g'],
+                        self.z[att+'w0'], self.z[att+'w1'], self.z[att+'w2'], self.z[att+'a0'], self.z[att+'a1'], self.z[att+'a2'], 
+                        self.z[att+'v0'], self.z[att+'v1'], self.z[att+'v2'],
+                        self.z[att+'g1'], self.z[att+'g2'], self.z[att+'k_k'], self.z[att+'k_a'], self.z[att+'r_k'],
+                        self.z[att+'receptance.weight'], self.z[att+'key.weight'], self.z[att+'value.weight'], self.z[att+'output.weight'],
+                        self.z[att+'ln_x.weight'], self.z[att+'ln_x.bias']
+                    )
+                x = x + xx
+                
+                # FFN block
+                xx = F.layer_norm(x, (self.n_embd,), weight=self.z[bbb+'ln2.weight'], bias=self.z[bbb+'ln2.bias'])
+                if len(xx.shape) < 2:
+                    xx, state[state_offset+2] = RWKV_x070_CMix_one(xx, state[state_offset+2], self.z[ffn+'x_k'], self.z[ffn+'key.weight'], self.z[ffn+'value.weight'])
+                else:
+                    xx, state[state_offset+2] = RWKV_x070_CMix_seq(xx, state[state_offset+2], self.z[ffn+'x_k'], self.z[ffn+'key.weight'], self.z[ffn+'value.weight'])
+            
+                x = x + xx
+            
+            # 处理重复执行的injection逻辑
+            if repeat_step > 0:
+                if self.injection_type in ["linear", "ffn"]:
+                    x = F.linear(
+                        torch.cat([
+                            F.layer_norm(x_before_group, x_before_group.shape[-1:]),
+                            F.layer_norm(x, x.shape[-1:])
+                        ], dim=-1),
+                        weight=self.z['input_injection_adapter.weight'],
+                        bias=self.z['input_injection_adapter.bias']
+                    )
+                    v_first = F.linear(
+                        torch.cat([
+                            F.layer_norm(v_first_before_group, v_first_before_group.shape[-1:]),
+                            F.layer_norm(v_first, v_first.shape[-1:])
+                        ], dim=-1),
+                        weight=self.z['input_injection_adapter.weight'],
+                        bias=self.z['input_injection_adapter.bias']
+                    )
+        
+        return x, v_first
+
+    def forward(self, idx, state, full_output=False):
+        if state == None:
+            tot_layers = self.num_hidden_groups * self.inner_group_num
+            state = [None for _ in range(tot_layers * 3)]
+            for i in range(tot_layers): # state: 0=att_x_prev 1=att_kv 2=ffn_x_prev
+                state[i*3+0] = torch.zeros(self.n_embd, dtype=DTYPE, requires_grad=False, device="cuda")
+                state[i*3+1] = torch.zeros((self.n_embd // self.head_size, self.head_size, self.head_size), dtype=torch.float, requires_grad=False, device="cuda")
+                state[i*3+2] = torch.zeros(self.n_embd, dtype=DTYPE, requires_grad=False, device="cuda")
+
+        if type(idx) is list:
+            # print(f"len(idx): {len(idx)}")
+            if len(idx) > 1:
+                return self.forward_seq_adaptive(idx, state, full_output)
+            else:
+                return self.forward_one_adaptive(idx[0], state)
+        else:
+            return self.forward_one_adaptive(idx, state)
+
+    @torch.jit.script_method
+    def forward_one_adaptive(self, idx: int, state: List[torch.Tensor]):
+        with torch.no_grad(): 
+            z = self.z
+            x = z['emb.weight'][idx]
+            v_first = torch.empty_like(x)
+            
+            # 生成自适应重复层配置
+            repeat_layers = self.repeat_layers
+            print(repeat_layers)
+            
+            # 早退相关变量
+            prev_outputs = []
+            compute_steps = 0
+            total_repeat_times = sum(repeat_layers.values()) if repeat_layers else 0
+            
+            # 处理每个layer group
+            for i in range(self.num_hidden_groups):
+                repeat_count = repeat_layers.get(i, 1)
+                compute_steps += repeat_count
+                
+                # 执行当前group（可能重复多次）
+                if self.adaptive_loop_enabled and repeat_count > 1:
+                    x, v_first = self.process_group_with_repeat(i, x, v_first, state, repeat_count)
+                else:
+                    # 标准执行路径
+                    for j in range(self.inner_group_num):
+                        layer_idx = i * self.inner_group_num + j
+                        state_offset = layer_idx * 3
+                        
+                        bbb = f'rwkv_layer_groups.{i}.rwkv_layers.{j}.'
+                        att = bbb + 'att.'
+                        ffn = bbb + 'ffn.'
+                        
+                        xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
+                        xx, state[state_offset+0], state[state_offset+1], v_first = RWKV_x070_TMix_one(
+                            i, self.n_head, self.head_size, xx, state[state_offset+0], v_first, state[state_offset+1],
+                            z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
+                            z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], 
+                            z[att+'v0'], z[att+'v1'], z[att+'v2'],
+                            z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
+                            z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'],
+                            z[att+'ln_x.weight'], z[att+'ln_x.bias']
+                        )
+                        x = x + xx
+                        
+                        xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
+                        xx, state[state_offset+2] = RWKV_x070_CMix_one(xx, state[state_offset+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
+                        x = x + xx
+                
+                # 记录输出用于早退检查
+                if self.early_exit_enabled:
+                    prev_outputs.append(x.clone())
+                    if self.check_early_exit_condition(x, prev_outputs, compute_steps):
+                        break
+            
+            # 最终输出
+            x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
+            x = x @ z['head.weight']
+            
+            return x, state
+
+    @torch.jit.script_method  
+    def forward_seq_adaptive(self, idx: List[int], state: List[torch.Tensor], full_output: bool = False):
+        with torch.no_grad(): 
+            z = self.z
+            x = z['emb.weight'][idx]
+            v_first = torch.empty_like(x)
+            
+            # 生成自适应重复层配置
+            repeat_layers = self.repeat_layers
+            print(f"repeat layers: {repeat_layers}")
+            
+            # 早退相关变量
+            prev_outputs = []
+            compute_steps = 0
+            
+            # 处理每个layer group
+            for i in range(self.num_hidden_groups):
+                repeat_count = repeat_layers.get(i, 1)
+                compute_steps += repeat_count
+                
+                ## 执行当前group（可能重复多次）
+                if self.adaptive_loop_enabled and repeat_count > 1:
+                    x, v_first = self.process_group_with_repeat(i, x, v_first, state, repeat_count)
+                else:
+                    # 标准执行路径
+                    for j in range(self.inner_group_num):
+                        layer_idx = i * self.inner_group_num + j
+                        state_offset = layer_idx * 3
+                        
+                        bbb = f'rwkv_layer_groups.{i}.rwkv_layers.{j}.'
+                        att = bbb + 'att.'
+                        ffn = bbb + 'ffn.'
+
+                        xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
+                        xx, state[state_offset+0], state[state_offset+1], v_first = RWKV_x070_TMix_seq(
+                            i, self.n_head, self.head_size, xx, state[state_offset+0], v_first, state[state_offset+1],
+                            z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
+                            z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], 
+                            z[att+'v0'], z[att+'v1'], z[att+'v2'],
+                            z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
+                            z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'],
+                            z[att+'ln_x.weight'], z[att+'ln_x.bias']
+                        )
+                        x = x + xx
+                        
+                        xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
+                        xx, state[state_offset+2] = RWKV_x070_CMix_seq(xx, state[state_offset+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
+                        x = x + xx
+                
+                # 早退检查（基于最后一个token的输出）
+                if self.early_exit_enabled:
+                    last_token_x = x[-1:] if len(x.shape) > 1 else x
+                    prev_outputs.append(last_token_x.clone())
+                    if self.check_early_exit_condition(last_token_x, prev_outputs, compute_steps):
+                        break
+            
+            # 最终输出
+            if not full_output: 
+                x = x[-1,:]
+            x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
+            x = x @ z['head.weight']
+            
+            return x, state

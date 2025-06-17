@@ -86,30 +86,6 @@ class RWKV_TOKENIZER():
             # print(repr(s), i)
         print()
 
-@MyStatic
-def sample_logits(logits, temperature:float=1.0, top_p:float=1.0, top_k:int=0):
-    probs = F.softmax(logits.float(), dim=-1)
-    sorted_probs, sorted_ids = torch.sort(probs, descending=True)
-    
-    if top_k > 0:
-        probs[sorted_ids[top_k:]] = 0
-
-    if top_p < 1:
-        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-        cutoff_index = torch.searchsorted(cumulative_probs, top_p)
-        cutoff = sorted_probs[cutoff_index]
-        probs[probs < cutoff] = 0
-
-        if top_p > 0:
-            idx = torch.where(probs == cutoff)[0]
-            if len(idx) > 0:
-                probs[idx] = cutoff + (top_p - torch.sum(probs).item()) / len(idx)
-                # assert abs(torch.sum(probs).item() - top_p) < 1e-6
-    
-    if temperature != 1.0:
-        probs = probs ** (1.0 / temperature)
-
-    return torch.multinomial(probs, num_samples=1).item()
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
@@ -197,6 +173,20 @@ if __name__ == "__main__":
     #########################################################
     parser.add_argument("--injection_type", default="linear", type=str)
 
+    #####################testing args##########################
+    parser.add_argument("--adaptive_loop_enabled", default=True, type=bool)
+    parser.add_argument("--min_repeat", default=1, type=int)
+    parser.add_argument("--max_repeat", default=12, type=int)
+    parser.add_argument("--repeat_prob", default=0.4, type=bool)
+    # parser.add_argument("--injection_type", default=True, type=bool)
+    parser.add_argument("--early_exit_enabled", default=True, type=bool)
+    parser.add_argument("--confidence_threshold", default=0.3, type=float)
+    parser.add_argument("--stability_threshold", default=1e-3, type=float)
+    parser.add_argument("--stability_check_layers", default=3, type=int)
+    parser.add_argument("--max_compute_steps", default=50, type=int)
+    
+
+
     parser = Trainer.add_argparse_args(parser)
     args = parser.parse_args()
 
@@ -252,74 +242,74 @@ if __name__ == "__main__":
         args.dim_ffn = int((args.n_embd * 3.5) // 32 *
                            32)  # default = 3.5x emb size
 
-    args.run_name = f"{args.vocab_size} ctx{args.ctx_len} L{args.n_layer} D{args.n_embd}"
-    if not os.path.exists(args.proj_dir):
-        os.makedirs(args.proj_dir)
+    # args.run_name = f"{args.vocab_size} ctx{args.ctx_len} L{args.n_layer} D{args.n_embd}"
+    # if not os.path.exists(args.proj_dir):
+    #     os.makedirs(args.proj_dir)
 
-    args.epoch_count = args.magic_prime // 40320
-    args.epoch_steps = 40320 // args.real_bsz
-    assert args.epoch_steps * args.real_bsz == 40320
+    # args.epoch_count = args.magic_prime // 40320
+    # args.epoch_steps = 40320 // args.real_bsz
+    # assert args.epoch_steps * args.real_bsz == 40320
 
-    if args.train_stage >= 2:  # find latest saved model
-        list_p = []
-        for p in os.listdir(args.proj_dir):
-            if p.startswith("rwkv") and p.endswith(".pth"):
-                p = ((p.split("-"))[1].split("."))[0]
-                if p != "final":
-                    if p == "init":
-                        p = -1
-                    else:
-                        p = int(p)
-                    list_p += [p]
-        list_p.sort()
-        max_p = list_p[-1]
-        if len(list_p) > 1:
-            args.my_pile_prev_p = list_p[-2]  # in case max_p is corrupted
-        if max_p == -1:
-            args.load_model = f"{args.proj_dir}/rwkv-init.pth"
-        else:
-            args.load_model = f"{args.proj_dir}/rwkv-{max_p}.pth"
-            if args.warmup_steps < 0:
-                args.warmup_steps = 10
-        args.epoch_begin = max_p + 1
+    # if args.train_stage >= 2:  # find latest saved model
+    #     list_p = []
+    #     for p in os.listdir(args.proj_dir):
+    #         if p.startswith("rwkv") and p.endswith(".pth"):
+    #             p = ((p.split("-"))[1].split("."))[0]
+    #             if p != "final":
+    #                 if p == "init":
+    #                     p = -1
+    #                 else:
+    #                     p = int(p)
+    #                 list_p += [p]
+    #     list_p.sort()
+    #     max_p = list_p[-1]
+    #     if len(list_p) > 1:
+    #         args.my_pile_prev_p = list_p[-2]  # in case max_p is corrupted
+    #     if max_p == -1:
+    #         args.load_model = f"{args.proj_dir}/rwkv-init.pth"
+    #     else:
+    #         args.load_model = f"{args.proj_dir}/rwkv-{max_p}.pth"
+    #         if args.warmup_steps < 0:
+    #             args.warmup_steps = 10
+    #     args.epoch_begin = max_p + 1
 
-    samples_per_epoch = args.epoch_steps * args.real_bsz
-    tokens_per_epoch = samples_per_epoch * args.ctx_len
-    try:
-        deepspeed_version = deepspeed.__version__
-    except:
-        deepspeed_version = None
-        pass
-    rank_zero_info(
-        f"""
-############################################################################
-#
-# RWKV-7 {args.precision.upper()} on {args.num_nodes}x{args.devices} {args.accelerator.upper()}, bsz {args.num_nodes}x{args.devices}x{args.micro_bsz}={args.real_bsz}, {args.strategy} {'with grad_cp' if args.grad_cp > 0 else ''}
-#
-# Data = {args.data_file} ({args.data_type}), ProjDir = {args.proj_dir}
-#
-# Epoch = {args.epoch_begin} to {args.epoch_begin + args.epoch_count - 1} (will continue afterwards), save every {args.epoch_save} epoch
-#
-# Each "epoch" = {args.epoch_steps} steps, {samples_per_epoch} samples, {tokens_per_epoch} tokens
-#
-# Model = {args.n_layer} n_layer, {args.n_embd} n_embd, {args.ctx_len} ctx_len
-#
-# Adam = lr {args.lr_init} to {args.lr_final}, warmup {args.warmup_steps} steps, beta {args.betas}, eps {args.adam_eps}
-#
-# Found torch {torch.__version__}, recommend latest torch
-# Found deepspeed {deepspeed_version}, recommend latest deepspeed
-# Found pytorch_lightning {pl.__version__}, recommend 1.9.5
-#
-############################################################################
-"""
-    )
-    rank_zero_info(str(vars(args)) + "\n")
+#     samples_per_epoch = args.epoch_steps * args.real_bsz
+#     tokens_per_epoch = samples_per_epoch * args.ctx_len
+#     try:
+#         deepspeed_version = deepspeed.__version__
+#     except:
+#         deepspeed_version = None
+#         pass
+#     rank_zero_info(
+#         f"""
+# ############################################################################
+# #
+# # RWKV-7 {args.precision.upper()} on {args.num_nodes}x{args.devices} {args.accelerator.upper()}, bsz {args.num_nodes}x{args.devices}x{args.micro_bsz}={args.real_bsz}, {args.strategy} {'with grad_cp' if args.grad_cp > 0 else ''}
+# #
+# # Data = {args.data_file} ({args.data_type}), ProjDir = {args.proj_dir}
+# #
+# # Epoch = {args.epoch_begin} to {args.epoch_begin + args.epoch_count - 1} (will continue afterwards), save every {args.epoch_save} epoch
+# #
+# # Each "epoch" = {args.epoch_steps} steps, {samples_per_epoch} samples, {tokens_per_epoch} tokens
+# #
+# # Model = {args.n_layer} n_layer, {args.n_embd} n_embd, {args.ctx_len} ctx_len
+# #
+# # Adam = lr {args.lr_init} to {args.lr_final}, warmup {args.warmup_steps} steps, beta {args.betas}, eps {args.adam_eps}
+# #
+# # Found torch {torch.__version__}, recommend latest torch
+# # Found deepspeed {deepspeed_version}, recommend latest deepspeed
+# # Found pytorch_lightning {pl.__version__}, recommend 1.9.5
+# #
+# ############################################################################
+# """
+#     )
+#     rank_zero_info(str(vars(args)) + "\n")
 
-    assert args.data_type in ["binidx"]
+#     assert args.data_type in ["binidx"]
 
-    if args.lr_final == 0 or args.lr_init == 0:
-        rank_zero_info(
-            "\n\nNote: lr_final = 0 or lr_init = 0. Using linear LR schedule instead.\n\n")
+#     if args.lr_final == 0 or args.lr_init == 0:
+#         rank_zero_info(
+#             "\n\nNote: lr_final = 0 or lr_init = 0. Using linear LR schedule instead.\n\n")
 
     assert args.precision in ["fp32", "tf32", "fp16", "bf16"]
     os.environ["RWKV_FLOAT_MODE"] = args.precision
@@ -361,7 +351,7 @@ if __name__ == "__main__":
     
     tokenizer = RWKV_TOKENIZER("rwkv_vocab_v20230424.txt")  
 
-    from src.model import RWKV, RWKV_shared
+    from src.model import RWKV, RWKV_shared, RWKV_x070_infer, RWKV_x070_infer_v2
     from torch.nn import functional as F
     # model = RWKV_shared(args)
     MODEL_PATH = "/data/projects/RWKV-LM-V7-Depth-recur/out/L32-D2048-x070/rwkv-52.pth"
@@ -374,26 +364,17 @@ if __name__ == "__main__":
 
     from torch.utils.cpp_extension import load
     HEAD_SIZE = args.head_size
-    
+
     model_params = torch.load(MODEL_PATH, map_location="cpu")
 
     with torch.no_grad():
-        model = RWKV_shared(args).to(dtype=DTYPE).cuda()
+        model = RWKV_x070_infer_v2(args)
         model.load_state_dict(model_params, strict=False) # ignore blocks.0.att.v0/v1/v2
-        prompt = "User: Can you discuss the ethical implications of artificial intelligence? Assistent: The ethical implications of artificial intelligence are vast and "
+        prompt = "DNA stands for deoxyribonucleic"
         input = tokenizer.encode(prompt)
         print(f'\nInput:\n{input}')
-        out, _ = model.forward(torch.tensor(input).reshape(1,-1).cuda())
-        # print(f'\nOutput:\n{out}')
-        print(f'\nOutput length:\n{len(out)}')
-
-        out = out[-1]
-        bs, seq, dim = out.shape
-        out = out.reshape(bs * seq, dim)
-        print(f'\nOutput shape:\n{out.shape}')
-        last_out = out[-1]
-        probs = F.softmax(last_out.float(), dim=-1) # compute softmax in float (more accurate)
-
+        init_out, init_state = model.forward(tokenizer.encode(prompt), None)
+        probs = F.softmax(init_out.float(), dim=-1) # compute softmax in float (more accurate)
         print(f'\n{prompt}')
         # print(f'\nProbabilities:\n{probs}')
         print(f'\nProbabilities shape:\n{probs.shape}')

@@ -37,7 +37,7 @@ EPOCH_SAVE=2 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens)
 # magic_prime = the largest 3n+2 prime smaller than datalen/ctxlen-1 (= 1498226207/512-1 = 2926222.06 in this case) = 2926181 in this case
 # use https://www.dcode.fr/prime-numbers-search
 #
-N_NODE=1 # number of nodes
+N_NODE=2 # number of nodes
 GPU_PER_NODE=8 # number of GPUs per node
 #
 DS_BUCKET_MB=50 # set to 2 for consumer GPUs, set to 200 for A100 / H100 (affects speed & vram usage)
