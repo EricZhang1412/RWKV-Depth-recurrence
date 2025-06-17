@@ -38,13 +38,13 @@ EPOCH_SAVE=2 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens)
 # use https://www.dcode.fr/prime-numbers-search
 #
 N_NODE=1 # number of nodes
-GPU_PER_NODE=8 # number of GPUs per node
+GPU_PER_NODE=1 # number of GPUs per node
 #
 DS_BUCKET_MB=50 # set to 2 for consumer GPUs, set to 200 for A100 / H100 (affects speed & vram usage)
 #
 NCCL_DEBUG=INFO
 
-TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train.py \
+TORCH_DISTRIBUTED_DEBUG=DETAIL CUDA_VISIBLE_DEVICES=0 python test.py \
     --load_model "0" \
     --wandb "" \
     --proj_dir $PROJ_DIR \
