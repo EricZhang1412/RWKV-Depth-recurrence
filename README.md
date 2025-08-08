@@ -52,6 +52,7 @@ Still, there is one thing I am not sure about. In [L880](https://github.com/Eric
 
 ## 📝Meetings
 - 2025-6-5 [[🪄Slides]](https://docs.google.com/presentation/d/1brLaagIpUDOwhBbCOOe1JmeXMRBdm9nK/edit?usp=drive_link&ouid=102165327555351456656&rtpof=true&sd=true)
+- 2025-8-8 [[🪄Slides-v2]](https://docs.google.com/presentation/d/1lO0fl0VIptqNZA0OTCAHRDt_9CtE3l-KDeUrCgkfuQs/edit?usp=sharing)
 
 ## 📝TODO
 <!-- add checkbox -->
